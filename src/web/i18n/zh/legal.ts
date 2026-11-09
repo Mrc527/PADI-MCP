@@ -26,7 +26,7 @@ export default {
   "legal.privacy.data.account": "<strong>你的账户。</strong>你的电子邮件地址以及你为 {app} 设置的密码。密码仅以 scrypt 哈希值的形式存储，因此我们无法看到它。我们还会存储你创建账户和上次登录的时间，以及账户是否已停用、是否为管理员账户。我们需要这些信息来为你提供账户并保障其安全。",
   "legal.privacy.data.request": "<strong>你的访问申请。</strong>如果你申请访问，我们会存储你写给管理员的留言，以便管理员做出决定。你的申请获批后，该留言即被删除。如果本服务设置了邮件服务器，并且管理员没有关闭电子邮件通知，你的电子邮件地址和这条留言还会通过电子邮件发送给管理员（参见“谁会收到你的数据”）。",
   "legal.privacy.data.invite": "<strong>邀请码。</strong>如果你使用邀请码注册，该邀请会记录你的电子邮件地址以及你使用它的时间。",
-  "legal.privacy.data.padi": "<strong>你的 PADI 连接。</strong>你的 PADI 电子邮件地址、你在这里登录时 PADI 提供的登录令牌（一个刷新令牌）、你的 PADI 账户 ID（affiliate id）、PADI 记录的你的姓名，以及你的设置：单位、只读模式和你的登录时间。这些信息使用 AES-256-GCM 加密存储。你的 PADI 密码只在登录时使用一次，绝不会被存储。我们需要这些信息来代表你访问你的 PADI 潜水日志。",
+  "legal.privacy.data.padi": "<strong>你的 PADI 连接。</strong>你的 PADI 电子邮件地址、你在这里登录时 PADI 提供的登录令牌（一个刷新令牌）、你的 PADI 账户 ID（affiliate id）、PADI 记录的你的姓名，以及你的设置：单位、只读模式和时区，还有你的登录时间。这些信息使用 AES-256-GCM 加密存储。你的 PADI 密码只在登录时使用一次，绝不会被存储。我们需要这些信息来代表你访问你的 PADI 潜水日志。",
   "legal.privacy.data.apps": "<strong>已连接的 AI 应用。</strong>当你连接一个 AI 应用时，我们会存储该应用的注册信息（它为自己提供的名称和网址），以及允许它代表你的账户执行操作的令牌。令牌仅以哈希值的形式存储。我们还会存储每个连接的建立时间和上次使用时间，以便你查看并撤销它。",
   "legal.privacy.data.activity": "<strong>活动日志。</strong>对于 AI 应用执行的每项操作（一次工具调用，例如 <code>logbook_list_dives</code>），我们会记录时间、应用、工具、耗时以及是否成功。我们不会记录读取或写入的内容：不记录潜水、潜点、潜伴、备注或潜水证书。你可以在“已连接的应用”页面查看最新的记录，我们则使用该日志来查找错误和滥用行为。",
   "legal.privacy.data.sessions": "<strong>浏览器会话。</strong>当你登录时，你的浏览器会在 Cookie 中获得一个随机会话代码。我们只存储它的哈希值，以及它的创建时间和过期时间。",

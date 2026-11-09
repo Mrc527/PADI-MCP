@@ -39,6 +39,8 @@ export default {
   "account.padi.units.auto": "Le stesse del mio logbook PADI",
   "account.padi.units.metric": "Metriche (m, °C, bar, kg)",
   "account.padi.units.imperial": "Imperiali (ft, °F, psi, lb)",
+  "account.padi.timeZone": "Fuso orario",
+  "account.padi.timeZoneHint": "La tua app di IA lo usa per sapere la data di oggi, ad esempio quando registri l'immersione di oggi.",
   "account.padi.readOnly": "Sola lettura",
   "account.padi.readOnlyHint": "Le app di IA possono leggere il tuo logbook, ma non possono mai aggiungere, modificare o eliminare immersioni.",
   "account.padi.readOnlyEnforced": "Imposta dall'amministratore.",
@@ -77,8 +79,18 @@ export default {
   "account.error.formExpired": "Il modulo è scaduto. Riprova.",
   "account.error.missing": "Inserisci la tua e-mail e la tua password PADI.",
   "account.error.email": "Inserisci un indirizzo e-mail valido.",
-  // {error} is the answer of PADI (in English).
+  "account.error.timeZone": "Fuso orario sconosciuto.",
+  // {error} is one of the account.error.padi.* texts below.
   "account.error.signIn": "Non è stato possibile accedere a PADI: {error}",
+  "account.error.padi.badCredentials": "PADI non ha accettato l'e-mail o la password. Controllale e riprova: usa l'e-mail e la password con cui accedi a padi.com. Se accedi a PADI con Google, Apple o Facebook, imposta prima una password PADI con Password dimenticata (Forgot password) su account.padi.com.",
+  "account.error.padi.locked": "PADI ha bloccato l'accesso per ora, dopo troppi tentativi non riusciti. Attendi un po', poi riprova.",
+  "account.error.padi.disabled": "Secondo PADI questo account è disattivato. Contatta PADI.",
+  "account.error.padi.challenge": "PADI chiede un passaggio di accesso in più, ad esempio una nuova password o un codice. Questo server non può eseguire quel passaggio. Se PADI chiede una nuova password, impostala su account.padi.com, poi accedi qui con quella.",
+  "account.error.padi.notConfirmed": "Questo account PADI non è ancora confermato. Confermalo con l'e-mail di PADI, poi riprova.",
+  "account.error.padi.passwordReset": "PADI ti chiede di reimpostare la password. Reimpostala su account.padi.com, poi accedi qui con la nuova password.",
+  "account.error.padi.network": "Non è stato possibile raggiungere PADI. Riprova più tardi.",
+  "account.error.padi.expired": "PADI ha chiuso l'accesso. Riprova.",
+  "account.error.padi.unknown": "PADI non ha accettato l'accesso. Riprova più tardi. Dettagli: {detail}",
 
   // Connected apps
   "account.apps.title": "App collegate",

@@ -6,11 +6,18 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { signIn } from "../../src/padi/auth.js";
 import { endpointsFromEnv } from "../../src/padi/endpoints.js";
+import { todayInZone } from "../../src/util/dates.js";
+import { buildUserConfig } from "../../src/web/accounts.js";
+import { SecretBox } from "../../src/web/crypto.js";
+import { escapeHtml } from "../../src/web/html.js";
+import { t, withLocale } from "../../src/web/i18n/index.js";
+import { signInError } from "../../src/web/routes-account.js";
 import { createWebApp, type WebApp } from "../../src/web/server.js";
-import type { PadiAccountSettings } from "../../src/web/store.js";
+import { DEFAULT_SETTINGS, type PadiAccountSettings } from "../../src/web/store.js";
 import { MOCK_ACCOUNT, startMockPadi, type MockPadi } from "../helpers/mock-padi.js";
 import { Browser, connectMcp, setBase, TestOAuthClient } from "../helpers/web-client.js";
 
@@ -82,7 +89,7 @@ afterAll(async () => {
 });
 
 /** The JSON text of a tool answer. */
-const text = (res: { content?: unknown }) => JSON.stringify(res.content);
+const text = (res: unknown) => JSON.stringify((res as { content?: unknown }).content);
 
 const PASSWORD = "correct horse battery";
 
@@ -96,9 +103,9 @@ describe("discovery", () => {
   it("publishes protected resource and authorization server metadata", async () => {
     const prm = await (await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)).json();
     expect(prm).toMatchObject({ resource: `${base}/mcp`, authorization_servers: [base], scopes_supported: ["padi"] });
-    const root = await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json();
+    const root = (await (await fetch(`${base}/.well-known/oauth-protected-resource`)).json()) as { resource: string };
     expect(root.resource).toBe(`${base}/mcp`);
-    const as = await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json();
+    const as = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as { token_endpoint_auth_methods_supported: string[] };
     expect(as).toMatchObject({
       issuer: base,
       authorization_endpoint: `${base}/authorize`,
@@ -202,6 +209,51 @@ describe("accounts", () => {
     expect(await missing.text()).toContain("Enter your PADI e-mail and password.");
   });
 
+  it("explains a refused PADI sign-in in the page's language, without internal codes", async () => {
+    const german = new Browser();
+    await german.login("admin@example.com", PASSWORD);
+    german.jar.set("pdm_lang", "de");
+    const { csrf } = await german.page("/account");
+    const res = await german.post("/account/padi", { _csrf: csrf, email: MOCK_ACCOUNT.email, password: "wrong-password", keep: "settings" });
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    const reason = withLocale("de", () => t("account.error.padi.badCredentials"));
+    expect(html).toContain(escapeHtml(withLocale("de", () => t("account.error.signIn", { error: reason }))));
+    // Not the PADI client's own English text, and never its internal code.
+    expect(html).not.toContain("[bad_credentials]");
+    expect(html).not.toContain("PADI did not accept the e-mail or password. Check them and try again (use");
+    // The English page names the Google, Apple and Facebook case.
+    expect(t("account.error.padi.badCredentials")).toContain("Google, Apple or Facebook");
+  });
+
+  it("tells a blocked or disabled PADI account apart from a wrong password", async () => {
+    const endpoints = endpointsFromEnv(mock.env());
+    /** The sign-in error for a Cognito answer (no request leaves the test). */
+    const refused = async (status: number, body: Record<string, unknown>) =>
+      signIn(MOCK_ACCOUNT.email, "x", { method: "cognito", endpoints, backoffMs: 0, fetch: async () => new Response(JSON.stringify(body), { status }) }).then(
+        () => expect.unreachable(),
+        (error: unknown) => error,
+      );
+    const reason = async (status: number, body: Record<string, unknown>) => {
+      const error = await refused(status, body);
+      return withLocale("en", () => signInError(error));
+    };
+    expect(await reason(400, { __type: "NotAuthorizedException", message: "Password attempts exceeded" })).toBe(
+      t("account.error.signIn", { error: t("account.error.padi.locked") }),
+    );
+    expect(await reason(400, { __type: "NotAuthorizedException", message: "User is disabled." })).toBe(t("account.error.signIn", { error: t("account.error.padi.disabled") }));
+    expect(await reason(400, { __type: "NotAuthorizedException", message: "Incorrect username or password." })).toBe(
+      t("account.error.signIn", { error: t("account.error.padi.badCredentials") }),
+    );
+    expect(await reason(400, { __type: "UserNotConfirmedException", message: "User is not confirmed." })).toBe(
+      t("account.error.signIn", { error: t("account.error.padi.notConfirmed") }),
+    );
+    // An unexpected answer keeps its (English) detail, without the code.
+    const odd = await reason(400, { __type: "SomethingNewException" });
+    expect(odd).toContain("SomethingNewException");
+    expect(odd).not.toContain("[unknown]");
+  });
+
   it("stores the PADI connection encrypted and never shows the refresh token", async () => {
     const user = web.ctx.store.getUserByEmail("admin@example.com")!;
     web.ctx.store.savePadiSettings(user.id, { ...padiSettings, refreshToken: "rt-secret-invented-value" });
@@ -296,6 +348,38 @@ describe("OAuth and MCP", () => {
     expect((await client.listTools()).tools.map((t) => t.name)).toContain("logbook_create_dive");
   });
 
+  it("uses the diver's own time zone for today's date", async () => {
+    const id = web.ctx.store.getUserByEmail("user@example.com")!.id;
+    // The server default (UTC) was saved with the connection; the form offers every zone.
+    expect(web.ctx.store.getPadiSettings(id)!.timeZone).toBe("UTC");
+    const { csrf, html } = await userBrowser.page("/account");
+    expect(html).toContain('<select id="timeZone-saved" name="timeZone">');
+    expect(html).toContain('<option value="Pacific/Kiritimati" >Pacific/Kiritimati</option>');
+    // An unknown zone is refused and nothing changes.
+    const bad = await userBrowser.post("/account/padi/settings", { _csrf: csrf, units: "auto", timeZone: "Mars/Olympus" });
+    expect(bad.status).toBe(400);
+    expect(await bad.text()).toContain("Unknown time zone.");
+    expect(web.ctx.store.getPadiSettings(id)!.timeZone).toBe("UTC");
+    // UTC+14: often already the next day when it is still today in UTC.
+    const zone = "Pacific/Kiritimati";
+    const { csrf: c2 } = await userBrowser.page("/account");
+    expect((await userBrowser.post("/account/padi/settings", { _csrf: c2, units: "auto", timeZone: zone })).headers.get("location")).toBe("/account?m=saved");
+    expect(web.ctx.store.getPadiSettings(id)).toMatchObject({ timeZone: zone, units: "auto", readOnly: false });
+    const info = JSON.parse(((await client.callTool({ name: "padi_account_info", arguments: {} })).content as { text: string }[])[0]!.text);
+    expect(info).toMatchObject({ time_zone: zone, today: todayInZone(zone) });
+    const created = await client.callTool({
+      name: "logbook_create_dive",
+      arguments: { title: "Morning dive", date: todayInZone(zone), location: "House Reef", dive_type: "shore", max_depth: 12, bottom_time_min: 40, units: "metric" },
+    });
+    expect(created.isError, text(created)).toBeFalsy();
+    const dive = JSON.parse((created.content as { text: string }[])[0]!.text);
+    await client.callTool({ name: "logbook_delete_dive", arguments: { dive_id: dive.id, confirm_title: "Morning dive" } });
+    // The server default applies to connections without a zone of their own.
+    const server = { ...DEFAULT_SETTINGS, defaultTimeZone: "Europe/Zurich" };
+    expect(buildUserConfig({ ...padiSettings, timeZone: zone }, server).timeZone).toBe(zone);
+    expect(buildUserConfig(padiSettings, server).timeZone).toBe("Europe/Zurich");
+  });
+
   it("keeps a new refresh token from PADI without rebuilding the services", async () => {
     const id = web.ctx.store.getUserByEmail("user@example.com")!.id;
     // A sign-in through the PADI auth API, whose refresh may hand out a new refresh token.
@@ -326,6 +410,8 @@ describe("OAuth and MCP", () => {
     mock.expireIdTokens();
     const failed = await client.callTool({ name: "logbook_list_dives", arguments: {} });
     expect(failed.isError).toBe(true);
+    // Already the call that finds the dead sign-in says where to sign in again (not padi.com).
+    expect(text(failed)).toContain(`Your PADI sign-in expired. Sign in again at ${base}/account`);
     expect(web.ctx.store.getUser(id)!.padiNeedsReconnect).toBe(true);
     const info = await client.callTool({ name: "padi_account_info", arguments: {} });
     expect(info.isError).toBe(true);
@@ -361,7 +447,7 @@ describe("OAuth and MCP", () => {
       body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: before.refresh_token!, client_id: oauth.info!.client_id }),
     });
     expect(replay.status).toBe(400);
-    expect((await replay.json()).error).toBe("invalid_grant");
+    expect(((await replay.json()) as { error: string }).error).toBe("invalid_grant");
     const after = await fetch(`${base}/mcp`, {
       method: "POST",
       headers: { authorization: `Bearer ${oauth.savedTokens!.access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -412,7 +498,7 @@ describe("OAuth and MCP", () => {
       body: new URLSearchParams({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: metadataUrl, redirect_uri: "https://claude.ai/api/mcp/auth_callback", resource: `${base}/mcp` }),
     });
     expect(token.status).toBe(200);
-    const body = await token.json();
+    const body = (await token.json()) as { access_token: string };
     expect(body.access_token).toMatch(/^pdm_at_/);
     // Codes are single use.
     const again = await fetch(`${base}/token`, {
@@ -533,6 +619,18 @@ describe("administration", () => {
     ({ html } = await admin.page("/admin"));
     expect(html).toMatch(/user@example\.com[\s\S]*?<span class="badge bad">needs reconnect<\/span>/);
     web.ctx.store.setPadiNeedsReconnect(user.id, false);
+    // A connection that cannot be decrypted (the master key changed) cannot be used: it is not
+    // counted and needs a new sign-in.
+    const { hashPassword } = await import("../../src/web/crypto.js");
+    const locked = web.ctx.store.createUser("key-changed@example.com", await hashPassword(PASSWORD), false);
+    const otherKey = new SecretBox(randomBytes(32));
+    web.ctx.store.db.prepare("UPDATE users SET service_enc = ?, service_updated_at = 1 WHERE id = ?").run(otherKey.seal(JSON.stringify(padiSettings), locked.id), locked.id);
+    expect(web.ctx.store.getUser(locked.id)!.hasPadi).toBe(true);
+    expect(web.ctx.store.unreadablePadiUserIds()).toEqual(new Set([locked.id]));
+    ({ html } = await admin.page("/admin"));
+    expect(html).toContain(`(${connected} with PADI connected)`);
+    expect(html).toMatch(/key-changed@example\.com[\s\S]*?<span class="badge bad">needs reconnect<\/span>/);
+    web.ctx.store.deleteUser(locked.id);
     // No service switches: there is one service.
     expect(html).not.toContain("svcMail");
     expect(html).not.toContain("Services");
@@ -603,7 +701,7 @@ describe("storage robustness", () => {
       body: JSON.stringify({ client_name: "x".repeat(50_000), redirect_uris: ["https://app.example.org/cb"] }),
     });
     expect(huge.status).toBe(413);
-    const body = await reg.json();
+    const body = (await reg.json()) as { client_id: string; client_secret?: string };
     expect(body.client_secret).toBeUndefined();
     const row = web.ctx.store.db.prepare("SELECT length(data) AS n FROM oauth_clients WHERE client_id = ?").get(body.client_id) as { n: number };
     expect(row.n).toBeLessThan(2_000);

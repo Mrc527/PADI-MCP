@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Icon } from "@modelcontextprotocol/sdk/types.js";
@@ -13,7 +14,7 @@ import type { LoginMethod, StoredPadiTokens } from "./padi/auth.js";
 import { PadiSession, type TokenSink } from "./padi/session.js";
 import { registerTool, type ToolContext } from "./tooling.js";
 import { todayInZone } from "./util/dates.js";
-import { describeError, redact } from "./util/errors.js";
+import { describeError, redact, UserFacingError } from "./util/errors.js";
 import { VERSION } from "./version.js";
 import { ICON_PNG } from "./web/brand-assets.js";
 
@@ -65,7 +66,13 @@ export function readTokenCache(file: string, email?: string): StoredPadiTokens |
   }
 }
 
-/** Saves the refresh token to a file only the current user can read (written atomically). */
+/**
+ * Saves the refresh token to a file only the current user can read (written atomically).
+ *
+ * The temporary file has a random name and is created exclusively ("wx": O_CREAT | O_EXCL), so
+ * a file or a symlink that someone else placed there is never written to or moved into place:
+ * the cache is always a new file with mode 0600.
+ */
 export function fileTokenSink(file: string, email: string | undefined, log: (m: string) => void): TokenSink {
   return {
     save(tokens) {
@@ -75,12 +82,22 @@ export function fileTokenSink(file: string, email: string | undefined, log: (m: 
         clientId: tokens.clientId,
         ...(email ? { email } : {}),
       };
+      const tmp = `${file}.${randomBytes(8).toString("hex")}.tmp`;
+      let created = false;
       try {
         mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-        const tmp = `${file}.${process.pid}.tmp`;
-        writeFileSync(tmp, `${JSON.stringify(data)}\n`, { mode: 0o600 });
+        writeFileSync(tmp, `${JSON.stringify(data)}\n`, { mode: 0o600, flag: "wx" });
+        created = true;
         renameSync(tmp, file);
       } catch (error) {
+        // Only remove a temporary file this call created.
+        if (created) {
+          try {
+            unlinkSync(tmp);
+          } catch {
+            // Nothing more to do.
+          }
+        }
         log(`Could not write the PADI token cache: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
       }
     },
@@ -178,7 +195,8 @@ function unitsText(units: AppConfig["units"]): string {
 export function buildInstructions(config: AppConfig): string {
   const lines: string[] = [
     "Tools for the user's PADI online dive logbook (the logbook at learning.padi.com). Dives are identified by the id from logbook_list_dives.",
-    `Dive dates are calendar dates (YYYY-MM-DD) without a time zone; today is taken in ${config.timeZone}. Numbers use ${unitsText(config.units)} unless a call names other units. Always give values with their units.`,
+    `Dive dates are the user's local calendar dates (YYYY-MM-DD) without a time zone. The server's today (padi_account_info) is in ${config.timeZone} and can be a day off the user's date: when the user says "today" or "yesterday" and you are not sure of their date, ask. Dates after today everywhere on Earth are refused.`,
+    `Numbers use ${unitsText(config.units)} unless a call names other units. Always give values with their units.`,
     "Dives that are Pending, Verified or QR Code Verified are locked: they cannot be changed or deleted.",
   ];
   if (config.readOnly) {
@@ -206,33 +224,58 @@ export interface McpServerHooks {
   websiteUrl?: string;
 }
 
-/** The padi_account_info answer. */
+/** A safe text for an error (as tool errors show it). */
+function errorText(error: unknown, secrets: readonly string[]): string {
+  return redact(error instanceof UserFacingError ? error.message : `Error: ${describeError(error)}`, secrets);
+}
+
+/**
+ * The padi_account_info answer. When the PADI sign-in fails, check=true still answers (with
+ * connected false and the error in check); without check the call fails with that error.
+ */
 async function accountInfo(config: AppConfig, services: Services, check: boolean, extra: Record<string, unknown> | undefined): Promise<Record<string, unknown>> {
   const settings = describeConfig(config);
   const info: Record<string, unknown> = {};
   const logbook = services.logbook;
+  let signInError: string | undefined;
   if (logbook) {
-    const account = await logbook.account();
-    Object.assign(info, {
-      ...(account.name ? { name: account.name } : {}),
-      ...((account.email ?? config.padi.email) ? { email: account.email ?? config.padi.email } : {}),
-      affiliate_id: account.affiliateId,
-      is_pro: account.isPro,
-      units: config.units,
-    });
-    // The PADI logbook setting decides the units when the server follows it ("auto").
+    let account: Awaited<ReturnType<LogbookService["account"]>> | undefined;
     try {
-      const units = await logbook.getUnits();
-      Object.assign(info, { padi_units_setting: units.padi_setting, effective_units: units.effective });
-    } catch {
-      // Not essential: the answer stays useful without it.
+      account = await logbook.account();
+    } catch (error) {
+      if (!check) throw error;
+      signInError = errorText(error, config.secrets);
     }
-    Object.assign(info, {
-      read_only: config.readOnly,
-      api_mode: account.apiMode ?? config.padi.apiMode,
-      ...(account.loginMethod ? { login_method: account.loginMethod } : {}),
-      ...(account.tokenExpiresAt ? { token_expires_at: account.tokenExpiresAt } : {}),
-    });
+    if (account) {
+      Object.assign(info, {
+        ...(account.name ? { name: account.name } : {}),
+        ...((account.email ?? config.padi.email) ? { email: account.email ?? config.padi.email } : {}),
+        affiliate_id: account.affiliateId,
+        is_pro: account.isPro,
+        units: config.units,
+      });
+      // The PADI logbook setting decides the units when the server follows it ("auto").
+      try {
+        const units = await logbook.getUnits();
+        Object.assign(info, { padi_units_setting: units.padi_setting, effective_units: units.effective });
+      } catch {
+        // Not essential: the answer stays useful without it.
+      }
+      Object.assign(info, {
+        read_only: config.readOnly,
+        api_mode: account.apiMode ?? config.padi.apiMode,
+        ...(account.loginMethod ? { login_method: account.loginMethod } : {}),
+        ...(account.tokenExpiresAt ? { token_expires_at: account.tokenExpiresAt } : {}),
+      });
+    } else {
+      Object.assign(info, {
+        ...(config.padi.email ? { email: config.padi.email } : {}),
+        connected: false,
+        units: config.units,
+        read_only: config.readOnly,
+        api_mode: config.padi.apiMode,
+      });
+    }
   } else {
     Object.assign(info, {
       ...(config.padi.email ? { email: config.padi.email } : {}),
@@ -248,12 +291,17 @@ async function accountInfo(config: AppConfig, services: Services, check: boolean
     ...extra,
     today: todayInZone(config.timeZone),
     time_zone: config.timeZone,
+    today_note: `The server's date in ${config.timeZone}. The user's own date can differ by a day.`,
     server_version: VERSION,
     ...(settings.custom_endpoints ? { custom_endpoints: settings.custom_endpoints } : {}),
   });
   if (check && logbook) {
-    const result = await logbook.check().catch((error: unknown) => ({ ok: false, error: describeError(error) }));
-    info.check = "error" in result && typeof result.error === "string" ? { ...result, error: redact(result.error, config.secrets) } : result;
+    if (signInError !== undefined) {
+      info.check = { ok: false, error: signInError };
+    } else {
+      const result = await logbook.check().catch((error: unknown) => ({ ok: false, error: describeError(error) }));
+      info.check = "error" in result && typeof result.error === "string" ? { ...result, error: redact(result.error, config.secrets) } : result;
+    }
   }
   return info;
 }
@@ -288,8 +336,8 @@ export function createMcpServer(config: AppConfig, services: Services, log: (m: 
       name: "padi_account_info",
       title: "PADI account info",
       description:
-        "Show the connected PADI account (name, e-mail, PADI affiliate id), the units (the server setting and the PADI logbook setting), whether the account is read-only, the API mode, whether it is a demo account, today's date, the time zone and the server version. " +
-        "With check=true it also tests the connection to PADI and counts the dives.",
+        "Show the connected PADI account (name, e-mail, PADI affiliate id), the units (the server setting and the PADI logbook setting), whether the account is read-only, the API mode, whether it is a demo account, the server's date (today, in time_zone; the user's own date can differ by a day) and the server version. " +
+        "With check=true it also tests the connection to PADI and counts the dives; it then answers even when the PADI sign-in fails (connected false, the error in check).",
       inputSchema: { check: z.boolean().optional().describe("Also test the connection to PADI and count the dives") },
       kind: "read",
     },
@@ -299,6 +347,20 @@ export function createMcpServer(config: AppConfig, services: Services, log: (m: 
   if (services.logbook) registerLogbookTools(ctx, services.logbook);
   registerPrompts(server, config);
   return server;
+}
+
+/**
+ * The year of the year_in_review prompt: "this year" (or nothing), "last year", or the first year
+ * in the text ("2025 season" is 2025). Other text is passed on as the user wrote it.
+ */
+export function reviewYear(input: string | undefined, today: string): { year: string; text?: undefined } | { year?: undefined; text: string } {
+  const current = Number(today.slice(0, 4));
+  const t = (input ?? "").trim().replace(/\s+/g, " ");
+  if (!t || /^(this|current) year$/i.test(t)) return { year: String(current) };
+  if (/^(last|previous) year$/i.test(t)) return { year: String(current - 1) };
+  const match = t.match(/\b(?:19|20)\d{2}\b/);
+  if (match) return { year: match[0] };
+  return { text: t.slice(0, 100) };
 }
 
 function registerPrompts(server: McpServer, config: AppConfig): void {
@@ -332,23 +394,19 @@ function registerPrompts(server: McpServer, config: AppConfig): void {
     {
       title: "Year in review",
       description: "A summary of a year of diving from the PADI logbook",
-      argsSchema: { year: z.string().optional().describe("The year, for example 2026 (default: this year)") },
+      argsSchema: { year: z.string().optional().describe('The year, for example 2026, "last year" or "this year" (default: this year)') },
     },
     ({ year }) => {
-      const y = year && /^\d{4}$/.test(year.trim()) ? year.trim() : todayInZone(config.timeZone).slice(0, 4);
-      return {
-        messages: [
-          {
-            role: "user",
-            content: {
-              type: "text",
-              text:
-                `Give me a short review of my diving in ${y}. Use logbook_stats with from=${y}-01-01, to=${y}-12-31 and group_by=month, and logbook_list_dives with the same from and to (limit 100). ` +
-                "Mention the number of dives, the total bottom time, the deepest and the longest dive, my favourite locations, any training dives and certifications, with units. Do not change anything in the logbook.",
-            },
-          },
-        ],
-      };
+      const today = todayInZone(config.timeZone);
+      const parsed = reviewYear(year, today);
+      const end =
+        "Mention the number of dives, the total bottom time, the deepest and the longest dive, my favourite locations, any training dives and certifications, with units. Do not change anything in the logbook.";
+      const text =
+        parsed.year !== undefined
+          ? `Give me a short review of my diving in ${parsed.year}. Use logbook_stats with from=${parsed.year}-01-01, to=${parsed.year}-12-31 and group_by=month, and logbook_list_dives with the same from and to (limit 100). ${end}`
+          : `Give me a short review of a year of my diving. The year I mean: ${JSON.stringify(parsed.text)} (the server's date is ${today}); if it is not clear which year that is, ask me. ` +
+            `Then use logbook_stats with from=<year>-01-01, to=<year>-12-31 and group_by=month, and logbook_list_dives with the same from and to (limit 100). ${end}`;
+      return { messages: [{ role: "user", content: { type: "text", text } }] };
     },
   );
 }

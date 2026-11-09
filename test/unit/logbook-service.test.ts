@@ -36,7 +36,7 @@ import type {
   WireLogInsert,
   WireLogUpdate,
 } from "../../src/logbook/types.js";
-import { NotFoundError, ReadOnlyError, UserFacingError } from "../../src/util/errors.js";
+import { NotFoundError, ReadOnlyError, UnconfirmedWriteError, UserFacingError } from "../../src/util/errors.js";
 
 // Invented data only.
 const NOW = new Date("2026-11-09T12:00:00Z");
@@ -103,6 +103,10 @@ class FakeBackend implements LogbookBackend {
   deleted: number[] = [];
   instructors: Record<string, InstructorMatch[]> = { "123456": [{ memberNumber: 123456, name: "Pat Q Instructor" }] };
   photos: Record<string, Buffer> = {};
+  photoTypes: Record<string, string> = {};
+  /** Errors to throw, to test what happens when PADI fails. */
+  fail: { getUnits?: Error; getLogAfterWrite?: Error; insertLog?: Error; listPhotoIds?: Error } = {};
+  private wrote = false;
   nextId = 1000;
   delayMs = 0;
   log: string[] = [];
@@ -139,11 +143,14 @@ class FakeBackend implements LogbookBackend {
   }
   async getLog(id: number): Promise<WireLog | undefined> {
     this.calls.push(`getLog:${id}`);
+    if (this.wrote && this.fail.getLogAfterWrite) throw this.fail.getLogAfterWrite;
     const d = this.logs.get(id);
     return d ? structuredClone(d) : undefined;
   }
   async insertLog(payload: WireLogInsert): Promise<number> {
     this.calls.push("insertLog");
+    if (this.fail.insertLog) throw this.fail.insertLog;
+    this.wrote = true;
     this.inserts.push(structuredClone(payload));
     const id = this.nextId++;
     const p = payload;
@@ -171,6 +178,7 @@ class FakeBackend implements LogbookBackend {
     this.log.push(`update-start:${update.id}`);
     await this.wait();
     this.calls.push(`updateLog:${update.id}`);
+    this.wrote = true;
     this.updates.push(structuredClone(update));
     const d = this.logs.get(update.id)!;
     const g = update.general as Record<string, unknown>;
@@ -193,6 +201,7 @@ class FakeBackend implements LogbookBackend {
   }
   async getUnits(): Promise<Units> {
     this.calls.push("getUnits");
+    if (this.fail.getUnits) throw this.fail.getUnits;
     return this.units;
   }
   async setUnits(units: Units): Promise<void> {
@@ -208,10 +217,11 @@ class FakeBackend implements LogbookBackend {
   }
   async listPhotoIds(logId: number): Promise<string[]> {
     this.calls.push(`listPhotoIds:${logId}`);
+    if (this.fail.listPhotoIds) throw this.fail.listPhotoIds;
     return Object.keys(this.photos);
   }
   async getPhoto(_logId: number, photoId: string): Promise<{ data: Buffer; mimeType: string }> {
-    return { data: this.photos[photoId]!, mimeType: "image/jpeg" };
+    return { data: this.photos[photoId]!, mimeType: this.photoTypes[photoId] ?? "image/jpeg" };
   }
   async account(): Promise<PadiAccount> {
     return { affiliateId: "10000001", isPro: false };
@@ -444,13 +454,19 @@ describe("LogbookService creating dives", () => {
     expect(d.pressure_used).toBe(2300);
   });
 
-  it("refuses dates in the future, using the configured time zone for today", async () => {
-    const late = () => new Date("2026-11-09T23:30:00Z");
-    const tomorrowUtc = { ...base, date: "2026-11-10" };
-    await expect(service(new FakeBackend(), { clock: late }).createDive(tomorrowUtc)).rejects.toThrow(/in the future/);
-    // In Auckland it is already 10 November.
-    const d = await service(new FakeBackend(), { clock: late, timeZone: "Pacific/Auckland" }).createDive(tomorrowUtc);
+  it("refuses only dates that are in the future everywhere on Earth, whatever the server's time zone", async () => {
+    // 23:00 UTC on 9 November: in Sydney it is already 10 November (a morning dive).
+    const late = () => new Date("2026-11-09T23:00:00Z");
+    const d = await service(new FakeBackend(), { clock: late }).createDive({ ...base, date: "2026-11-10" });
     expect(d.date).toBe("2026-11-10");
+    const err = await rejects(service(new FakeBackend(), { clock: late }).createDive({ ...base, date: "2026-11-11" }));
+    expect(err.message).toMatch(/2026-11-11 is in the future/);
+    // The server's own date is not given as the user's today.
+    expect(err.message).not.toMatch(/today is/);
+    // 09:59 UTC: it is not yet 10 November anywhere (UTC+14 is 23:59 on 9 November).
+    const early = () => new Date("2026-11-09T09:59:00Z");
+    await expect(service(new FakeBackend(), { clock: early }).createDive({ ...base, date: "2026-11-10" })).rejects.toThrow(/in the future/);
+    expect((await service(new FakeBackend(), { clock: early }).createDive({ ...base, date: "2026-11-09" })).date).toBe("2026-11-09");
     await expect(service(new FakeBackend()).createDive({ ...base, date: "1926-11-08" })).rejects.toThrow(/100 years/);
     await expect(service(new FakeBackend()).createDive({ ...base, date: "2026-02-30" })).rejects.toThrow(/Invalid calendar date/);
   });
@@ -530,6 +546,15 @@ describe("LogbookService changing dives", () => {
     expect(d.max_depth).toBe(66);
   });
 
+  it("asks for a date when a stored dive has none, instead of failing inside", async () => {
+    const b = new FakeBackend([dive(5, "2026-01-05", { dive_date: null })]);
+    const s = service(b);
+    await expect(s.updateDive({ dive_id: 5, notes: "x" })).rejects.toThrow(/has no date\. Give date \(YYYY-MM-DD\)/);
+    expect(b.updates).toHaveLength(0);
+    await s.updateDive({ dive_id: 5, notes: "x", date: "2026-01-05" });
+    expect(b.updates).toHaveLength(1);
+  });
+
   it("inserts missing child rows instead of updating them", async () => {
     const b = new FakeBackend([dive(5, "2026-01-05", { conditions: [], experiences: [] })]);
     await service(b).updateDive({ dive_id: 5, weather: "Rainy" });
@@ -567,7 +592,11 @@ describe("LogbookService changing dives", () => {
   it("deletes only with the title as confirmation and returns the dive", async () => {
     const b = new FakeBackend([dive(1, "2026-01-05", { dive_title: " Blue Corner " }), dive(2, "2026-01-06", { status: "Pending" })]);
     const s = service(b);
-    await expect(s.deleteDive({ dive_id: 1, confirm_title: "Blue" })).rejects.toThrow(/confirm_title does not match.*"Blue Corner"/);
+    // The error never gives the stored title, so it cannot be resent without asking the user.
+    const mismatch = await rejects(s.deleteDive({ dive_id: 1, confirm_title: "Blue" }));
+    expect(mismatch.message).toMatch(/Dive 1 is not titled "Blue"\. Nothing was deleted/);
+    expect(mismatch.message).toMatch(/ask the user/);
+    expect(mismatch.message).not.toMatch(/Blue Corner/i);
     await expect(s.deleteDive({ dive_id: 2, confirm_title: "Dive 2" })).rejects.toThrow(/waiting for verification/);
     expect(b.deleted).toEqual([]);
     const res = await s.deleteDive({ dive_id: 1, confirm_title: "  blue corner" });
@@ -576,7 +605,9 @@ describe("LogbookService changing dives", () => {
     expect(b.deleted).toEqual([1]);
     // A dive without a title is confirmed with its id.
     b.logs.set(3, dive(3, "2026-01-07", { dive_title: "  " }));
-    await expect(s.deleteDive({ dive_id: 3, confirm_title: "x" })).rejects.toThrow(/exactly: "3"/);
+    const noTitle = await rejects(s.deleteDive({ dive_id: 3, confirm_title: "x" }));
+    expect(noTitle.message).toMatch(/not titled "x"/);
+    expect(b.deleted).toEqual([1]);
     expect((await s.deleteDive({ dive_id: 3, confirm_title: "3" })).deleted).toBe(true);
   });
 
@@ -613,5 +644,250 @@ describe("LogbookService changing dives", () => {
       await expect(p).rejects.toBeInstanceOf(ReadOnlyError);
     }
     expect(b.calls).toEqual([]);
+  });
+});
+
+describe("LogbookService: training skills as the PADI form offers them", () => {
+  it("takes the ReActivate requirements and the Rescue exercises, and nothing else", async () => {
+    const b = new FakeBackend();
+    const s = service(b);
+    const re = await s.createDive({ ...base, training: { course: "Reactivate", log_number: 13, skills: ["Mask flood", "alternate air", "log dive", "panicked diver"] } });
+    expect(re.skills).toEqual(["mask flood", "alternate air", "log dive", "panicked diver"]);
+    // The form's label of "panicked diver" is accepted too (a ReActivate dive can be logged again).
+    const label = await s.createDive({ ...base, training: { course: "Reactivate", log_number: 13, skills: ["Buoyancy/weight check", "weight drop"] } });
+    expect(label.skills).toEqual(["panicked diver", "weight drop"]);
+    // ReActivate offers neither the flexible skills nor "no skills".
+    await expect(s.createDive({ ...base, training: { course: "Reactivate", log_number: 13, skills: ["no skills"] } })).rejects.toThrow(/Unknown skill "no skills"\. For this Reactivate dive use: mask flood/);
+    await expect(s.createDive({ ...base, training: { course: "Rescue", log_number: 10, skills: ["cramp removal"] } })).rejects.toThrow(/Unknown skill "cramp removal"/);
+    const rescue = await s.createDive({ ...base, training: { course: "Rescue", log_number: 11, skills: ["tired diver", "missing diver"] } });
+    expect(rescue.skills).toEqual(["tired diver", "missing diver"]);
+    // Open Water keeps the flexible skills.
+    expect((await s.createDive({ ...base, training: { course: "Open", log_number: 1, skills: ["no skills"] } })).skills).toEqual(["no skills"]);
+  });
+
+  it("asks for a skill without suggesting \"no skills\" where the course has none", async () => {
+    const b = new FakeBackend([dive(3, "2026-01-07", { log_type: "Training", log_course: "Rescue", log_number: 10, status: "Draft", skills: [] })]);
+    const err = await rejects(service(b).submitForVerification({ dive_id: 3, instructor_number: "123456", confirm: true }));
+    expect(err.message).toMatch(/Pick at least one skill: tired diver/);
+    expect(err.message).not.toMatch(/no skills/);
+  });
+
+  it("changes and sends a dive whose stored skills the current form does not offer", async () => {
+    // Stored by an older app version: a flexible skill on a ReActivate dive.
+    const old = dive(4, "2026-01-08", { log_type: "Training", log_course: "Reactivate", log_number: 13, status: "Draft", skills: [{ dive_skills: ["cramp removal"] }] });
+    const b = new FakeBackend([old]);
+    const s = service(b);
+    const changed = await s.updateDive({ dive_id: 4, notes: "Back in the water" });
+    expect(changed.notes).toBe("Back in the water");
+    expect(changed.skills).toEqual(["cramp removal"]);
+    const sent = await s.submitForVerification({ dive_id: 4, instructor_number: "123456", confirm: true });
+    expect(sent.dive.status).toBe("Pending");
+    // A change of the skills themselves is checked.
+    b.logs.set(5, { ...structuredClone(old), id: 5 });
+    await expect(s.updateDive({ dive_id: 5, skills: ["cramp removal"] })).rejects.toThrow(/Unknown skill/);
+    expect((await s.updateDive({ dive_id: 5, skills: ["weight drop"] })).skills).toEqual(["weight drop"]);
+  });
+});
+
+describe("LogbookService: gas changes on update", () => {
+  const withGas = (gas: string, o: number, n: number, h: number) =>
+    dive(1, "2026-01-05", { equipment: [{ ...dive(1, "2026-01-05").equipment![0]!, gas_mixture: gas as never, oxygen: o, nitrogen: n, helium: h }] });
+
+  it("does not keep the percentages of the old gas", async () => {
+    const air = () => service(new FakeBackend([withGas("Air", 21, 79, 0)]));
+    await expect(air().updateDive({ dive_id: 1, gas: "Enriched" })).rejects.toThrow(/Gas Enriched needs oxygen_pct/);
+    await expect(service(new FakeBackend([withGas("Enriched_32", 32, 68, 0)])).updateDive({ dive_id: 1, gas: "Rebreather" })).rejects.toThrow(/Gas Rebreather needs oxygen_pct/);
+    const nitrox = await air().updateDive({ dive_id: 1, gas: "Enriched", oxygen_pct: 30 });
+    expect([nitrox.gas, nitrox.oxygen_pct, nitrox.nitrogen_pct, nitrox.helium_pct]).toEqual(["Enriched", 30, 70, 0]);
+    const trimix = await air().updateDive({ dive_id: 1, gas: "Trimix", oxygen_pct: 21, helium_pct: 35 });
+    expect([trimix.oxygen_pct, trimix.nitrogen_pct, trimix.helium_pct]).toEqual([21, 44, 35]);
+  });
+
+  it("keeps a custom mix when the same gas is given again, and fills nitrogen again when oxygen changes", async () => {
+    const same = await service(new FakeBackend([withGas("Enriched", 30, 70, 0)])).updateDive({ dive_id: 1, gas: "Enriched" });
+    expect([same.oxygen_pct, same.nitrogen_pct, same.helium_pct]).toEqual([30, 70, 0]);
+    const richer = await service(new FakeBackend([withGas("Enriched", 30, 70, 0)])).updateDive({ dive_id: 1, oxygen_pct: 32 });
+    expect([richer.oxygen_pct, richer.nitrogen_pct, richer.helium_pct]).toEqual([32, 68, 0]);
+    const air = await service(new FakeBackend([withGas("Enriched", 30, 70, 0)])).updateDive({ dive_id: 1, gas: "Air" });
+    expect([air.oxygen_pct, air.nitrogen_pct, air.helium_pct]).toEqual([21, 79, 0]);
+  });
+});
+
+describe("LogbookService: units that cannot be read", () => {
+  it("never guesses the units of numbers in a write, but answers reads in metric", async () => {
+    const b = new FakeBackend([dive(1, "2026-01-05")]);
+    b.units = "Imperial";
+    b.fail.getUnits = new UserFacingError("The PADI logbook answered HTTP 503.");
+    const s = service(b, { units: "auto" });
+    const err = await rejects(s.createDive({ ...base, max_depth: 60 }));
+    expect(err.message).toMatch(/Could not read your PADI units setting/);
+    expect(err.message).toMatch(/units "metric" or "imperial"/);
+    await expect(s.updateDive({ dive_id: 1, max_depth: 60 })).rejects.toThrow(/Could not read your PADI units setting/);
+    expect(b.inserts).toHaveLength(0);
+    expect(b.updates).toHaveLength(0);
+    // With the units named, or without numbers, the write goes ahead.
+    expect((await s.createDive({ ...base, max_depth: 60, units: "imperial" })).max_depth).toBe(60);
+    expect(b.inserts[0]!.depth_times.data.max_depth).toBe(18.288);
+    expect((await s.updateDive({ dive_id: 1, notes: "No numbers" })).notes).toBe("No numbers");
+    // Reads are labelled, so they may fall back to metric.
+    expect((await s.getDive({ dive_id: 1 })).units.depth).toBe("m");
+  });
+
+  it("keeps using the last known setting when PADI does not answer after the cache expired", async () => {
+    const b = new FakeBackend([dive(1, "2026-01-05")]);
+    b.units = "Imperial";
+    let now = NOW.getTime();
+    const s = service(b, { units: "auto", clock: () => new Date(now) });
+    expect((await s.getDive({ dive_id: 1 })).units.depth).toBe("ft");
+    now += 6 * 60_000;
+    b.fail.getUnits = new UserFacingError("The PADI logbook did not answer.");
+    const d = await s.createDive({ ...base, max_depth: 60 });
+    expect(d.units.depth).toBe("ft");
+    expect(b.inserts[0]!.depth_times.data.max_depth).toBe(18.288);
+  });
+});
+
+describe("LogbookService: writes whose answer is lost", () => {
+  it("returns the new dive when it cannot be read back, so it is not logged twice", async () => {
+    const b = new FakeBackend([dive(1, "2026-01-05")]);
+    b.fail.getLogAfterWrite = new UserFacingError("The PADI logbook did not answer within 20 s. Try again later.");
+    const d = await service(b).createDive({ ...base, notes: "Kept" });
+    expect(d.id).toBe(1000);
+    expect(d.title).toBe("Morning dive");
+    expect(d.date).toBe("2026-11-01");
+    expect(d.max_depth).toBe(18);
+    expect(d.notes).toBe("Kept");
+    expect(d.note).toMatch(/Saved, but PADI did not return the saved dive/);
+    expect(b.logs.size).toBe(2);
+  });
+
+  it("returns the changed dive and the sent dive when they cannot be read back", async () => {
+    const b = new FakeBackend([dive(1, "2026-01-05")]);
+    b.fail.getLogAfterWrite = new UserFacingError("The PADI logbook answered HTTP 503.");
+    const changed = await service(b).updateDive({ dive_id: 1, notes: "Changed", max_depth: 25 });
+    expect([changed.id, changed.notes, changed.max_depth, changed.type]).toEqual([1, "Changed", 25, "Recreational"]);
+    expect(changed.note).toMatch(/logbook_get_dive/);
+    expect(b.updates).toHaveLength(1);
+    const c = new FakeBackend([dive(2, "2026-01-06")]);
+    c.fail.getLogAfterWrite = new UserFacingError("The PADI logbook answered HTTP 503.");
+    const sent = await service(c).submitForVerification({ dive_id: 2, instructor_number: "123456", confirm: true });
+    expect(sent.dive.status).toBe("Pending");
+    expect(sent.dive.instructor_number).toBe("123456");
+    expect(sent.dive.note).toMatch(/Saved/);
+  });
+
+  it("says a write without an answer may have been saved, and how to check", async () => {
+    const b = new FakeBackend();
+    b.fail.insertLog = new UnconfirmedWriteError();
+    const err = await rejects(service(b).createDive(base));
+    expect(err).toBeInstanceOf(UnconfirmedWriteError);
+    expect(err.message).toMatch(/"Morning dive" on 2026-11-01/);
+    expect(err.message).toMatch(/logbook_list_dives \(from 2026-11-01, to 2026-11-01\)/);
+    expect(err.message).not.toMatch(/try again later/i);
+  });
+});
+
+describe("LogbookService: deleting a dive with photos", () => {
+  it("refuses, since the photos would stay on PADI without a dive", async () => {
+    const b = new FakeBackend([dive(1, "2026-01-05")]);
+    b.photos = { a: Buffer.alloc(10), b: Buffer.alloc(10) };
+    const err = await rejects(service(b).deleteDive({ dive_id: 1, confirm_title: "Dive 1" }));
+    expect(err.message).toMatch(/Dive 1 has 2 photos/);
+    expect(err.message).toMatch(/learning\.padi\.com.*\/recreational\/update\/1/);
+    expect(b.deleted).toEqual([]);
+  });
+
+  it("deletes when the photo service does not answer, and says so", async () => {
+    const b = new FakeBackend([dive(1, "2026-01-05")]);
+    b.fail.listPhotoIds = new UserFacingError("The PADI photo service answered HTTP 503.");
+    const res = await service(b).deleteDive({ dive_id: 1, confirm_title: "Dive 1" });
+    expect(res.deleted).toBe(true);
+    expect(res.photos_checked).toBe(false);
+    expect(res.note).toMatch(/not known whether the dive had photos/);
+    expect(b.deleted).toEqual([1]);
+    // Without photos there is no note.
+    const c = new FakeBackend([dive(2, "2026-01-06")]);
+    expect(await service(c).deleteDive({ dive_id: 2, confirm_title: "Dive 2" })).not.toHaveProperty("note");
+  });
+});
+
+describe("LogbookService: reading, more", () => {
+  it("sorts by depth and time with dives without a value last, in a stable order for paging", async () => {
+    const b = new FakeBackend([
+      dive(1, "2026-01-01", { depth_times: [{ max_depth: 18, bottom_time: 40, time_in: null, time_out: null }] }),
+      dive(2, "2026-01-02", { depth_times: [{ max_depth: 18, bottom_time: 40, time_in: null, time_out: null }] }),
+      dive(3, "2026-01-02", { depth_times: [{ max_depth: 18, bottom_time: 40, time_in: null, time_out: null }] }),
+      dive(4, "2026-01-04", { status: "Draft", depth_times: [{ max_depth: null, bottom_time: null, time_in: null, time_out: null }] }),
+      dive(5, "2026-01-05", { depth_times: [{ max_depth: 30, bottom_time: 25, time_in: null, time_out: null }] }),
+      dive(6, "2026-01-06", { status: "Draft", depth_times: [] }),
+    ]);
+    const s = service(b);
+    const deep = await s.listDives({ sort: "max_depth" });
+    expect(deep.dives.map((d) => d.id)).toEqual([5, 3, 2, 1, 6, 4]);
+    expect((await s.listDives({ sort: "bottom_time" })).dives.map((d) => d.id)).toEqual([3, 2, 1, 5, 6, 4]);
+    const pages = [...(await s.listDives({ sort: "max_depth", limit: 2 })).dives, ...(await s.listDives({ sort: "max_depth", limit: 2, offset: 2 })).dives, ...(await s.listDives({ sort: "max_depth", limit: 2, offset: 4 })).dives];
+    expect(pages.map((d) => d.id)).toEqual([5, 3, 2, 1, 6, 4]);
+    expect(deep.total).toBe(6);
+    expect(b.calls.filter((c) => c.startsWith("listLogs:")).every((c) => c.includes('"orderBy":"date"'))).toBe(true);
+  });
+
+  it("lists dives in the units the call names", async () => {
+    const b = new FakeBackend([dive(1, "2026-01-05")]);
+    const res = await service(b).listDives({ units: "imperial" });
+    expect(res.units.depth).toBe("ft");
+    expect(res.dives[0]!.max_depth).toBe(36.1);
+    expect(z.strictObject(listDivesShape).parse({ units: "imperial" }).units).toBe("imperial");
+  });
+
+  it("leaves out photos AI apps cannot show (HEIC, not an image) and says where to see them", async () => {
+    const b = new FakeBackend([dive(1, "2026-01-05")]);
+    b.photos = { heic: Buffer.alloc(50), body: Buffer.from('{"error":"x"}'), ok: Buffer.alloc(50) };
+    b.photoTypes = { heic: "image/heic", body: "application/octet-stream", ok: "image/png" };
+    const res = await service(b).getPhotos({ dive_id: 1, max: 5 });
+    expect(res.photos.map((p) => [p.id, p.mimeType])).toEqual([["ok", "image/png"]]);
+    expect(res.skipped).toBe(2);
+    expect(res.skipped_unsupported).toEqual([
+      { id: "heic", mimeType: "image/heic" },
+      { id: "body", mimeType: "application/octet-stream" },
+    ]);
+    expect(res.web_url).toContain("/update/1");
+    // Only unsupported photos: an answer without images, not an error.
+    b.photos = { heic: Buffer.alloc(50) };
+    const none = await service(b).getPhotos({ dive_id: 1 });
+    expect(none.photos).toEqual([]);
+    expect(none.skipped_unsupported).toHaveLength(1);
+  });
+
+  it("exports in parts, oldest first, with compact JSON", async () => {
+    const b = new FakeBackend([1, 2, 3, 4, 5].map((n) => dive(n, `2026-01-0${n}`)));
+    const s = service(b);
+    const first = await s.exportDives({ format: "json", limit: 2 });
+    expect([first.total, first.count, first.offset, first.next_offset]).toEqual([5, 2, 0, 2]);
+    const dives = JSON.parse(first.content) as Array<Record<string, unknown>>;
+    expect(dives.map((d) => d.id)).toEqual([1, 2]);
+    expect(dives[0]).not.toHaveProperty("units");
+    expect(first.content).not.toContain("\n  ");
+    const last = await s.exportDives({ format: "csv", limit: 2, offset: 4 });
+    expect([last.count, last.next_offset]).toEqual([1, undefined]);
+    expect(last.content.trim().split("\r\n")).toHaveLength(2);
+    // The defaults keep an answer small enough for AI apps.
+    const big = new FakeBackend(Array.from({ length: 120 }, (_, i) => dive(i + 1, "2026-01-01")));
+    expect((await service(big).exportDives({ format: "json" })).count).toBe(50);
+    expect((await service(big).exportDives({ format: "csv" })).count).toBe(100);
+    expect((await service(big).exportDives({ format: "json", offset: 200 })).content).toBe("[]");
+  });
+});
+
+describe("LogbookService: null on create", () => {
+  it("accepts null for every optional field (null means not given)", async () => {
+    const create = z.strictObject(createDiveShape);
+    const args = create.parse({ ...base, surge: null, notes: null, gas: null, oxygen_pct: null, equipment: null, status: null, training: null, units: "metric" });
+    const b = new FakeBackend();
+    const d = await service(b).createDive(args as CreateDiveArgs);
+    expect(d.status).toBe("Publish");
+    expect(d).not.toHaveProperty("surge");
+    expect(b.inserts[0]!.experiences.data.notes).toBeNull();
+    const training = create.parse({ ...base, training: { course: "Advanced", log_number: 5, adventure_dive: null, skills: null } });
+    expect((await service(b).createDive(training as CreateDiveArgs)).title).toBe("Adventure Dive - Deep");
   });
 });

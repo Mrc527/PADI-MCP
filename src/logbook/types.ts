@@ -453,6 +453,8 @@ export interface Dive extends DiveSummary {
   skills?: string[];
   /** Where to see or edit the dive on learning.padi.com. */
   web_url: string;
+  /** A remark of this server about the answer (for example: saved, but it could not be read back). */
+  note?: string;
 }
 
 /** Training part of a new dive. */

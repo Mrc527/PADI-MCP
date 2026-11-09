@@ -12,7 +12,7 @@
  *   created_date and update_date are UTC wall clock "YYYY-MM-DDTHH:mm:ss" without "Z".
  */
 
-import { GAS_PRESETS, isLockedStatus } from "./enums.js";
+import { GAS_PRESETS, isEnumValue, isLockedStatus } from "./enums.js";
 import type {
   ChildTable,
   Dive,
@@ -353,9 +353,14 @@ export function emptyState(): DiveState {
 }
 
 /**
- * Merge a change into a state: undefined keeps a field, null clears it, a value sets it. A gas
- * preset (Air, EANx32/36/40) fills the percentages the change does not set; clearing the gas
- * clears them too. The patch must already be metric and normalised.
+ * Merge a change into a state: undefined keeps a field, null clears it, a value sets it. Gas
+ * percentages the change does not set follow the gas:
+ * - a gas preset (Air, EANx32/36/40) fills them;
+ * - clearing the gas, or changing to another custom gas (Enriched, Trimix, Rebreather), clears
+ *   them, so the new gas needs its own oxygen_pct (the old percentages belong to the old gas);
+ * - a new oxygen_pct or helium_pct of a custom gas clears nitrogen_pct, which is then the rest
+ *   to 100 again.
+ * The patch must already be metric and normalised.
  */
 export function applyPatch(state: DiveState, patch: DivePatch): DiveState {
   const next: DiveState = { ...state };
@@ -365,17 +370,24 @@ export function applyPatch(state: DiveState, patch: DivePatch): DiveState {
     if (value === undefined) continue;
     target[key] = Array.isArray(value) ? (value.length ? [...value] : null) : value;
   }
+  const clearUnset = () => {
+    if (patch.oxygen_pct === undefined) next.oxygen_pct = null;
+    if (patch.nitrogen_pct === undefined) next.nitrogen_pct = null;
+    if (patch.helium_pct === undefined) next.helium_pct = null;
+  };
   if (patch.gas !== undefined) {
     const preset = patch.gas ? GAS_PRESETS[patch.gas] : undefined;
     if (preset) {
       if (patch.oxygen_pct === undefined) next.oxygen_pct = preset.oxygen;
       if (patch.nitrogen_pct === undefined) next.nitrogen_pct = preset.nitrogen;
       if (patch.helium_pct === undefined) next.helium_pct = preset.helium;
-    } else if (patch.gas === null) {
-      if (patch.oxygen_pct === undefined) next.oxygen_pct = null;
-      if (patch.nitrogen_pct === undefined) next.nitrogen_pct = null;
-      if (patch.helium_pct === undefined) next.helium_pct = null;
+    } else if (patch.gas === null || patch.gas !== state.gas) {
+      clearUnset();
     }
+  }
+  const custom = next.gas !== null && isEnumValue("gas", next.gas) && !GAS_PRESETS[next.gas];
+  if (custom && patch.nitrogen_pct === undefined && (patch.oxygen_pct !== undefined || patch.helium_pct !== undefined)) {
+    next.nitrogen_pct = null;
   }
   return next;
 }

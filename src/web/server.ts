@@ -50,7 +50,7 @@ export interface WebOptions {
   operator: Record<string, string>;
   /** The operator's SMTP server for e-mails to administrators (none: no e-mails). */
   smtpUrl?: string;
-  /** Sender address of those e-mails (default: the SMTP user when it is an e-mail address, else the administrator's own address). */
+  /** Sender address of those e-mails (default: the SMTP user when it is an e-mail address; one of them is needed). */
   notifyFrom?: string;
   platform?: NodeJS.Platform;
   /** Keep-alive interval of the live activity streams (tests use a short one). */
@@ -66,6 +66,16 @@ export interface WebOptions {
 }
 
 type Env = Record<string, string | undefined>;
+
+/**
+ * SMTP_URL without a sender address. The administrator's own address is not used as the sender:
+ * relays such as Amazon SES or SendGrid refuse senders they do not know, and other servers send
+ * e-mails that bounce (DMARC).
+ */
+const NO_SENDER = "Set NOTIFY_FROM to a sender address your SMTP server accepts (the user name in SMTP_URL is not an e-mail address).";
+
+/** An example administrator password that must never be used. */
+const EXAMPLE_ADMIN_PASSWORD = "change-me-to-a-long-password";
 
 function readSecret(env: Env, name: string): string | undefined {
   const direct = env[name]?.trim();
@@ -99,6 +109,7 @@ export function webOptionsFromEnv(env: Env, cli: { host?: string; port?: number 
   // An address, or a name and an address: "MCP for PADI <noreply@example.com>".
   const fromAddress = notifyFrom?.match(/^[^<>\r\n]*<([^<>\s]+)>$/)?.[1] ?? notifyFrom;
   if (fromAddress && !isEmail(fromAddress)) throw new ConfigError("NOTIFY_FROM must be an e-mail address (or a name and an address in < >)");
+  if (smtpUrl && !notifyFrom && !smtpUserAddress(smtpUrl)) throw new ConfigError(NO_SENDER);
   return {
     publicUrl,
     host,
@@ -150,6 +161,7 @@ export async function createWebApp(opts: WebOptions): Promise<WebApp> {
   const pool = new ServicePool(store, opts.operator, undefined, demo, opts.log, opts.padiFetch);
   const send = opts.sendNotice ?? (opts.smtpUrl ? smtpSender(opts.smtpUrl) : undefined);
   const from = opts.notifyFrom ?? (opts.smtpUrl ? smtpUserAddress(opts.smtpUrl) : undefined);
+  if (send && !from) throw new ConfigError(NO_SENDER);
   const cookies = new Cookies(publicUrl.protocol === "https:");
   const ctx: WebContext = {
     store,
@@ -176,6 +188,8 @@ export async function createWebApp(opts: WebOptions): Promise<WebApp> {
   };
 
   if (opts.adminEmail && opts.adminPassword && !store.getUserByEmail(opts.adminEmail)) {
+    // The value an earlier deploy/.env.example shipped: everyone who read it knows it.
+    if (opts.adminPassword === EXAMPLE_ADMIN_PASSWORD) throw new ConfigError("ADMIN_PASSWORD is still the example value; set your own");
     const problem = passwordProblem(opts.adminPassword);
     if (problem) throw new ConfigError(`ADMIN_PASSWORD: ${problem}`);
     store.createUser(opts.adminEmail, await hashPassword(opts.adminPassword), true);

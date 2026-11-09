@@ -387,6 +387,17 @@ document.addEventListener("click", function (e) {
   if (confirmEl && !window.confirm(confirmEl.getAttribute("data-confirm"))) e.preventDefault();
 });
 
+// A new PADI connection: select the browser's own time zone (the server's default otherwise).
+(function () {
+  var select = document.querySelector("select[data-browser-tz]");
+  if (!select || !window.Intl) return;
+  var zone = "";
+  try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (err) { return; }
+  for (var i = 0; i < select.options.length; i++) {
+    if (select.options[i].value === zone) { select.selectedIndex = i; return; }
+  }
+})();
+
 // Live activity: new tool calls slide in at the top while the page is visible.
 (function () {
   var box = document.querySelector("[data-live]");

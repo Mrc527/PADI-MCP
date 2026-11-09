@@ -56,6 +56,11 @@ export interface PadiAccountSettings {
   name?: string;
   units: UnitChoice;
   readOnly: boolean;
+  /**
+   * The diver's time zone (IANA name): it decides what "today" is, for example the newest date
+   * a dive may have. Not set: the server's default time zone.
+   */
+  timeZone?: string;
   /** When the user signed in to PADI here (epoch ms). */
   connectedAt: number;
 }
@@ -187,8 +192,16 @@ export class Store {
 
   /** Number of users whose stored PADI settings cannot be decrypted with the current key. */
   countUnreadableSettings(): number {
+    return this.unreadablePadiUserIds().size;
+  }
+
+  /**
+   * Users whose stored PADI settings cannot be decrypted with the current key (for example after
+   * the master key changed). They have a connection on record (hasPadi) that cannot be used.
+   */
+  unreadablePadiUserIds(): Set<string> {
     const rows = this.db.prepare("SELECT id FROM users WHERE service_enc IS NOT NULL").all() as Row[];
-    return rows.filter((r) => this.readPadiSettings(String(r.id)).unreadable).length;
+    return new Set(rows.map((r) => String(r.id)).filter((id) => this.readPadiSettings(id).unreadable));
   }
 
   countUsers(): number {
@@ -397,15 +410,16 @@ export class Store {
   }
 
   /**
-   * Change the units and read-only switch of the saved PADI connection. The sign-in stays as it
-   * is (also its "needs reconnect" mark), but the user's services are rebuilt, because read-only
-   * changes the tools an AI app gets. Returns false when no readable connection is saved.
+   * Change the units, read-only switch and time zone of the saved PADI connection. The sign-in
+   * stays as it is (also its "needs reconnect" mark), but the user's services are rebuilt,
+   * because read-only changes the tools an AI app gets. A time zone that is not given stays as
+   * it is. Returns false when no readable connection is saved.
    */
-  savePadiPreferences(userId: string, prefs: Pick<PadiAccountSettings, "units" | "readOnly">): boolean {
+  savePadiPreferences(userId: string, prefs: Pick<PadiAccountSettings, "units" | "readOnly" | "timeZone">): boolean {
     return transaction(this.db, () => {
       const { settings } = this.readPadiSettings(userId);
       if (!settings) return false;
-      const next: PadiAccountSettings = { ...settings, units: prefs.units, readOnly: prefs.readOnly };
+      const next: PadiAccountSettings = { ...settings, units: prefs.units, readOnly: prefs.readOnly, ...(prefs.timeZone ? { timeZone: prefs.timeZone } : {}) };
       this.db.prepare("UPDATE users SET service_enc = ?, service_updated_at = ? WHERE id = ?").run(this.box.seal(JSON.stringify(next), userId), now(), userId);
       return true;
     });

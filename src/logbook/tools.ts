@@ -10,6 +10,8 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { rawResult, registerTool, type ToolContext, type ZodShape } from "../tooling.js";
 import {
+  EXPORT_DEFAULT_LIMIT,
+  EXPORT_MAX_LIMIT,
   createDiveShape,
   deleteDiveShape,
   exportShape,
@@ -48,7 +50,8 @@ const VALUES_TEXT =
   "Values are PADI's exact words, listed in each field's description, for example dive_type Boat, BeachShore (shore and beach also work) or Other; status Publish (default) or Draft; gas Air, Enriched_32, Enriched_36, Enriched_40 (these fill the oxygen, nitrogen and helium percentages), or Enriched, Trimix, Rebreather with oxygen_pct, nitrogen_pct and helium_pct summing to 100.";
 
 const TRAINING_TEXT =
-  "Training dives: give training {course, log_number, adventure_dive, skills}. Courses and log numbers: Open (Open Water, 1-4), Advanced (Advanced Open Water, 5 Deep, 6 Navigation, 7-9 elective dives that need adventure_dive), Rescue (10-11), DSD (Discover Scuba Diving, 12), Reactivate (13), SpecialtyAndDistinctive (no log number). Training dives are saved as Draft; a PADI Pro must then verify them (logbook_submit_for_verification).";
+  "Training dives: give training {course, log_number, adventure_dive, skills}. Courses and log numbers: Open (Open Water, 1-4), Advanced (Advanced Open Water, 5 Deep, 6 Navigation, 7-9 elective dives that need adventure_dive), Rescue (10-11), DSD (Discover Scuba Diving, 12), Reactivate (13), SpecialtyAndDistinctive (no log number). " +
+  "Skills are PADI's values for the course (listed in training.skills): Open the flexible skills, Rescue the exercises, Reactivate the requirements. Training dives are saved as Draft; a PADI Pro must then verify them (logbook_submit_for_verification).";
 
 /** Descriptions of the dive fields (create and update), used when the shape has none. */
 const DIVE_FIELD_DOCS: Record<string, string> = {
@@ -90,7 +93,7 @@ const DIVE_FIELD_DOCS: Record<string, string> = {
   dive_center: "Dive center or dive shop (free text)",
   training: "Training dives only: {course, log_number, adventure_dive, skills}",
   adventure_dive: "Advanced Open Water elective dives: the adventure dive, e.g. \"Night Diving\" or \"Wreck Diving\"",
-  skills: "Training dives: the skills done, e.g. [\"cramp removal\", \"snorkel exchange\"]",
+  skills: "Training dives: the skills done, PADI's values for the course (see logbook_create_dive training.skills)",
   units: UNITS_ARG,
 };
 
@@ -106,13 +109,20 @@ function withDocs<S extends ZodShape>(shape: S, docs: Record<string, string>): S
 
 /** The answer of logbook_get_photos: a JSON summary, then one image per photo. */
 export function photosResult(result: GetPhotosResult): CallToolResult {
+  const note =
+    result.total === 0
+      ? "This dive has no photos."
+      : result.skipped_unsupported?.length
+        ? `Some photos are in a format AI apps cannot show (see skipped_unsupported). They can be seen on learning.padi.com: ${result.web_url ?? ""}`.trim()
+        : undefined;
   const summary = {
     dive_id: result.dive_id,
     total: result.total,
     returned: result.photos.length,
     ...(result.skipped ? { skipped: result.skipped } : {}),
+    ...(result.skipped_unsupported?.length ? { skipped_unsupported: result.skipped_unsupported } : {}),
     photos: result.photos.map((p) => ({ id: p.id, mimeType: p.mimeType, bytes: p.data.length })),
-    ...(result.total === 0 ? { note: "This dive has no photos." } : {}),
+    ...(note ? { note } : {}),
   };
   return rawResult({
     content: [
@@ -136,7 +146,7 @@ export function registerLogbookTools(ctx: ToolContext, service: LogbookService):
         "List the dives of the user's PADI logbook, newest first (sort=max_depth: deepest first, sort=bottom_time: longest first). " +
         "Returns {total, dives, next_offset, units}; each dive has its id (the dive_id of the other tools), title, date, location, type, status, depth and bottom time, and locked=true when it cannot be changed. " +
         "Filters: log_type (Recreational or Training) or status (Draft, Publish, Pending, Resubmit, Verified, QR Code Verified), a date range (from/to, YYYY-MM-DD, inclusive) and query (text in the title, location or buddies). " +
-        "Use offset=next_offset for the next page. Depth is in m or ft (see units), bottom time in minutes. Use logbook_get_dive for every detail of one dive.",
+        "Use offset=next_offset for the next page. Depth is in m or ft (see units), bottom time in minutes. Dives without a depth or time come last when sorted by them. Use logbook_get_dive for every detail of one dive.",
       inputSchema: withDocs(listDivesShape, {
         limit: "Dives per page, 1-100 (default 15)",
         offset: "Dives to skip (default 0); use next_offset from the previous page",
@@ -206,21 +216,32 @@ export function registerLogbookTools(ctx: ToolContext, service: LogbookService):
       name: "logbook_export_dives",
       title: "Export dives",
       description:
-        "Export the dives of the PADI logbook (all, or a date range) with every field, as CSV (for a spreadsheet) or JSON (for a backup). " +
-        "The answer has two parts: a JSON summary (format, count, units), then the file content as text. Values are in the units of the summary.",
+        "Export the dives of the PADI logbook (all, or a date range), oldest first, with every field, as CSV (for a spreadsheet) or JSON (for a backup). " +
+        `Large logbooks come in parts: at most limit dives per answer (default ${EXPORT_DEFAULT_LIMIT.json} for json, ${EXPORT_DEFAULT_LIMIT.csv} for csv, up to ${EXPORT_MAX_LIMIT}); call again with offset=next_offset for the next part. ` +
+        "The answer has two parts: a JSON summary (format, total, count, offset, next_offset, units), then the file content as text. Values are in the units of the summary.",
       inputSchema: withDocs(exportShape, {
         format: "csv or json",
         from: `First dive date, ${DATE} (inclusive)`,
         to: `Last dive date, ${DATE} (inclusive)`,
+        limit: `Dives in this part, 1-${EXPORT_MAX_LIMIT}`,
+        offset: "Dives to skip (use next_offset of the previous part)",
         units: UNITS_ARG,
       }),
       kind: "read",
     },
     async (args) => {
       const result = await service.exportDives(args);
+      const summary = {
+        format: result.format,
+        total: result.total,
+        count: result.count,
+        offset: result.offset,
+        ...(result.next_offset !== undefined ? { next_offset: result.next_offset } : {}),
+        units: result.units,
+      };
       return rawResult({
         content: [
-          { type: "text", text: JSON.stringify({ format: result.format, count: result.count, units: result.units }, null, 2) },
+          { type: "text", text: JSON.stringify(summary, null, 2) },
           { type: "text", text: result.content },
         ],
       });
@@ -262,7 +283,7 @@ export function registerLogbookTools(ctx: ToolContext, service: LogbookService):
       name: "logbook_get_photos",
       title: "Get dive photos",
       description:
-        "Get the photos attached to a dive in the PADI logbook, as images (at most max, 1-5, default 3). Very large photos are left out and counted as skipped.",
+        "Get the photos attached to a dive in the PADI logbook, as images (at most max, 1-5, default 3). Very large photos, and photos in a format AI apps cannot show (for example HEIC), are left out and counted as skipped.",
       inputSchema: withDocs(getPhotosShape, { dive_id: DIVE_ID, max: "Maximum photos, 1-5 (default 3)" }),
       kind: "read",
     },
@@ -275,7 +296,7 @@ export function registerLogbookTools(ctx: ToolContext, service: LogbookService):
       name: "logbook_create_dive",
       title: "Log a dive",
       description:
-        "Add a dive to the user's PADI logbook. Required: title, date (YYYY-MM-DD, not in the future), location, dive_type, and, unless status is Draft, max_depth and bottom_time_min. Everything else is optional: leave out what the user did not say, never guess. " +
+        "Add a dive to the user's PADI logbook. Required: title, date (YYYY-MM-DD, not in the future), location, dive_type, and, unless status is Draft, max_depth and bottom_time_min. Everything else is optional: leave out what the user did not say (or send null), never guess. " +
         `${UNITS_TEXT} ${VALUES_TEXT} ${TRAINING_TEXT} ` +
         "Returns the saved dive.",
       inputSchema: withDocs(createDiveShape, DIVE_FIELD_DOCS),
@@ -340,7 +361,8 @@ export function registerLogbookTools(ctx: ToolContext, service: LogbookService):
       description:
         "Delete a dive from the PADI logbook for good (PADI has no trash). Ask the user first, unless they clearly asked to delete this dive. " +
         `confirm_title must be the dive's title (as logbook_get_dive shows it; case and spaces at the ends do not matter). ${LOCKED_TEXT} ` +
-        "Returns the deleted dive, so it can be created again with logbook_create_dive.",
+        "Returns the deleted dive, so it can be created again with logbook_create_dive (as a new dive with a new id). " +
+        "Photos are not part of the returned dive: a dive that has photos is not deleted here (delete it on learning.padi.com, which also deletes its photos).",
       inputSchema: withDocs(deleteDiveShape, { dive_id: DIVE_ID, confirm_title: "The title of the dive, to confirm which dive is deleted" }),
       kind: "destructive",
     },

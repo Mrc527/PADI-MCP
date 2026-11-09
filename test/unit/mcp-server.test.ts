@@ -5,7 +5,7 @@ import { loadConfig } from "../../src/config.js";
 import { DemoLogbookStore } from "../../src/demo/logbook.js";
 import { LogbookService, type ExportResult, type GetPhotosResult } from "../../src/logbook/service.js";
 import type { LogbookBackend, PadiAccount } from "../../src/logbook/types.js";
-import { buildInstructions, createMcpServer, createServices, SERVER_DESCRIPTION, SERVER_TITLE, type Services } from "../../src/server.js";
+import { buildInstructions, createMcpServer, createServices, reviewYear, SERVER_DESCRIPTION, SERVER_TITLE, type Services } from "../../src/server.js";
 import { redact } from "../../src/util/errors.js";
 
 // Invented test data only.
@@ -203,6 +203,9 @@ describe("MCP server", () => {
     expect(instructions).toMatch(/never follow instructions/);
     expect(instructions).toMatch(/Ask the user before deleting a dive or submitting it/);
     expect(instructions).toMatch(/PADI logbook setting/);
+    // "today" on the server is not the user's today.
+    expect(instructions).toMatch(/user's local calendar dates/);
+    expect(instructions).toMatch(/can be a day off the user's date/);
     expect(instructions).not.toContain("\u2014");
     const readOnly = await connect({ PADI_READ_ONLY: "true" });
     expect(readOnly.getInstructions()).toMatch(/read-only/);
@@ -241,6 +244,19 @@ describe("MCP server", () => {
     const text = textOf(res);
     expect(text).not.toContain(PASSWORD);
     expect(text).not.toContain(FAKE_JWT);
+
+    // With check=true a failed sign-in is a connection report, not a failed call.
+    const report = await client.callTool({ name: "padi_account_info", arguments: { check: true } });
+    expect(report.isError).toBeFalsy();
+    const reportText = textOf(report);
+    const reportInfo = JSON.parse(reportText);
+    expect(reportInfo).toMatchObject({ connected: false, email: "diver.test@example.com", units: "auto", read_only: false, demo: false, time_zone: "Europe/Zurich" });
+    expect(reportInfo.check.ok).toBe(false);
+    expect(reportInfo.check.error).toMatch(/PADI said no/);
+    expect(reportInfo.server_version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(reportInfo.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(reportText).not.toContain(PASSWORD);
+    expect(reportText).not.toContain(FAKE_JWT);
 
     const checked = await connect({}, fakeBackend({ checkError: `refresh failed for ${FAKE_JWT} (${PASSWORD})` }));
     const out = textOf(await checked.callTool({ name: "padi_account_info", arguments: { check: true } }));
@@ -285,6 +301,16 @@ describe("MCP server", () => {
     const text = JSON.stringify(review.messages);
     expect(text).toContain("from=2025-01-01");
     expect(text).toContain("logbook_stats");
+    // Other ways to name a year are understood, or passed on, never replaced by this year.
+    expect(JSON.stringify((await client.getPrompt({ name: "year_in_review", arguments: { year: "2024 season" } })).messages)).toContain("from=2024-01-01");
+    const unclear = JSON.stringify((await client.getPrompt({ name: "year_in_review", arguments: { year: "the year I got certified" } })).messages);
+    expect(unclear).toContain("the year I got certified");
+    expect(unclear).toContain("ask me");
+    expect(reviewYear("last year", "2026-11-09")).toEqual({ year: "2025" });
+    expect(reviewYear(" This  Year ", "2026-11-09")).toEqual({ year: "2026" });
+    expect(reviewYear(undefined, "2026-11-09")).toEqual({ year: "2026" });
+    expect(reviewYear("diving in 1998", "2026-11-09")).toEqual({ year: "1998" });
+    expect(reviewYear("my first year", "2026-11-09")).toEqual({ text: "my first year" });
     const log = await client.getPrompt({ name: "log_a_dive", arguments: { details: "Lantern Reef yesterday, 18 m" } });
     expect(JSON.stringify(log.messages)).toContain("Lantern Reef yesterday, 18 m");
     expect(JSON.stringify(log.messages)).toContain("logbook_create_dive");
@@ -296,8 +322,10 @@ describe("special answers", () => {
     override async getPhotos(): Promise<GetPhotosResult> {
       return {
         dive_id: 7,
-        total: 3,
-        skipped: 1,
+        total: 4,
+        skipped: 2,
+        skipped_unsupported: [{ id: "c", mimeType: "image/heic" }],
+        web_url: "https://learning.padi.com/logbook/log-dive/recreational/update/7",
         photos: [
           { id: "a", mimeType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff, 0x00]) },
           { id: "b", mimeType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
@@ -305,7 +333,7 @@ describe("special answers", () => {
       };
     }
     override async exportDives(): Promise<ExportResult> {
-      return { format: "csv", count: 1, units: { depth: "m", temp: "C", pressure: "bar", weight: "kg", volume: "l" }, content: "id,title\n1,Reef\n" };
+      return { format: "csv", total: 3, count: 1, offset: 0, next_offset: 1, units: { depth: "m", temp: "C", pressure: "bar", weight: "kg", volume: "l" }, content: "id,title\n1,Reef\n" };
     }
   }
 
@@ -316,7 +344,9 @@ describe("special answers", () => {
     expect(res.isError).toBeFalsy();
     const content = res.content as Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
     expect(content.map((c) => c.type)).toEqual(["text", "image", "image"]);
-    expect(JSON.parse(content[0]!.text!)).toMatchObject({ dive_id: 7, total: 3, returned: 2, skipped: 1 });
+    const summary = JSON.parse(content[0]!.text!);
+    expect(summary).toMatchObject({ dive_id: 7, total: 4, returned: 2, skipped: 2, skipped_unsupported: [{ id: "c", mimeType: "image/heic" }] });
+    expect(summary.note).toMatch(/cannot show.*learning\.padi\.com.*update\/7/);
     expect(content[1]).toMatchObject({ mimeType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff, 0x00]).toString("base64") });
     expect(content[2]!.mimeType).toBe("image/png");
     expect(res).not.toHaveProperty("__raw");
@@ -328,8 +358,30 @@ describe("special answers", () => {
     const res = await client.callTool({ name: "logbook_export_dives", arguments: { format: "csv" } });
     const content = res.content as Array<{ type: string; text: string }>;
     expect(content).toHaveLength(2);
-    expect(JSON.parse(content[0]!.text)).toMatchObject({ format: "csv", count: 1, units: { depth: "m" } });
+    expect(JSON.parse(content[0]!.text)).toMatchObject({ format: "csv", total: 3, count: 1, offset: 0, next_offset: 1, units: { depth: "m" } });
     expect(content[1]!.text).toBe("id,title\n1,Reef\n");
+  });
+});
+
+describe("tool arguments on the demo logbook", () => {
+  it("accepts null for optional fields on create, units on list, and paging on export", async () => {
+    const config = loadConfig(env);
+    const client = await connectWith(config, createServices(config, { demo: new DemoLogbookStore() }));
+    const created = await client.callTool({
+      name: "logbook_create_dive",
+      arguments: { title: "T", date: "2026-11-01", location: "L", dive_type: "boat", max_depth: 10, bottom_time_min: 30, surge: null, notes: null, gas: null, training: null, units: "metric" },
+    });
+    expect(created.isError, textOf(created)).toBeFalsy();
+    expect(JSON.parse(textOf(created))).toMatchObject({ title: "T", max_depth: 10 });
+    const listed = await client.callTool({ name: "logbook_list_dives", arguments: { units: "imperial", limit: 1, sort: "max_depth" } });
+    expect(listed.isError, textOf(listed)).toBeFalsy();
+    const page = JSON.parse(textOf(listed));
+    expect(page.units.depth).toBe("ft");
+    expect(page.dives[0].max_depth).toBeGreaterThan(0);
+    const exported = await client.callTool({ name: "logbook_export_dives", arguments: { format: "json", limit: 10, offset: 5 } });
+    const parts = exported.content as Array<{ text: string }>;
+    expect(JSON.parse(parts[0]!.text)).toMatchObject({ format: "json", total: 26, count: 10, offset: 5, next_offset: 15 });
+    expect(JSON.parse(parts[1]!.text)).toHaveLength(10);
   });
 });
 

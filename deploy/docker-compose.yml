@@ -6,6 +6,11 @@
 #
 # Then open https://$DOMAIN, sign in as the administrator and add https://$DOMAIN/mcp
 # as a custom connector in Claude.
+#
+# The project name keeps this stack apart from other Compose stacks in a folder called "deploy"
+# (for example MCP for iCloud): their containers and volumes would otherwise share names.
+name: padi-mcp
+
 services:
   padi-mcp:
     build: ..
@@ -19,6 +24,8 @@ services:
       # Optional: e-mails to administrators about access requests (your own SMTP server).
       SMTP_URL: ${SMTP_URL:-}
       NOTIFY_FROM: ${NOTIFY_FROM:-}
+      # Optional: PADI logbook API for every user: proxy (default), direct or auto.
+      PADI_API_MODE: ${PADI_API_MODE:-}
     volumes:
       - data:/data
 

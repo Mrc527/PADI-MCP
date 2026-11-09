@@ -429,7 +429,9 @@ export class PadiApi implements LogbookBackend {
     if (!res.ok) throw statusError("The PADI photo service", res, await readText(res));
     const data = Buffer.from(await res.arrayBuffer());
     const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-    return { data, mimeType: type.startsWith("image/") ? type : sniffImageType(data) };
+    // The bytes win over the header when they are a known image (servers send "image/jpg" and the like).
+    const sniffed = sniffImageType(data);
+    return { data, mimeType: sniffed !== "application/octet-stream" || !type.startsWith("image/") ? sniffed : type };
   }
 
   // -------------------------------------------------------------------------------------------

@@ -48,14 +48,23 @@ export interface SignInResult {
 
 export type PadiAuthErrorCode = "bad_credentials" | "challenge" | "expired" | "not_confirmed" | "password_reset" | "network" | "unknown";
 
+/**
+ * Why PADI refused a password that may be right: the account is blocked for now after too many
+ * failed attempts, or disabled. PADI reports both as "wrong e-mail or password" (code
+ * bad_credentials), so the code alone cannot tell them apart.
+ */
+export type PadiAuthRefusal = "locked" | "disabled";
+
 /** A sign-in or refresh problem. The message is safe to show (never contains a secret). */
 export class PadiAuthError extends UserFacingError {
   readonly code: PadiAuthErrorCode;
+  readonly refusal?: PadiAuthRefusal;
 
-  constructor(code: PadiAuthErrorCode, message: string, options?: { cause?: unknown }) {
-    super(message, options);
+  constructor(code: PadiAuthErrorCode, message: string, options?: { cause?: unknown; refusal?: PadiAuthRefusal }) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = "PadiAuthError";
     this.code = code;
+    if (options?.refusal) this.refusal = options.refusal;
   }
 }
 
@@ -173,8 +182,8 @@ function mapCognitoError(answer: CognitoAnswer, flow: "password" | "refresh"): P
     }
   } else {
     if (type === "NotAuthorizedException") {
-      if (/attempts exceeded/i.test(message)) return new PadiAuthError("bad_credentials", MSG.locked);
-      if (/disabled/i.test(message)) return new PadiAuthError("bad_credentials", MSG.disabled);
+      if (/attempts exceeded/i.test(message)) return new PadiAuthError("bad_credentials", MSG.locked, { refusal: "locked" });
+      if (/disabled/i.test(message)) return new PadiAuthError("bad_credentials", MSG.disabled, { refusal: "disabled" });
       return new PadiAuthError("bad_credentials", MSG.badCredentials);
     }
     if (type === "UserNotFoundException") return new PadiAuthError("bad_credentials", MSG.badCredentials);
@@ -270,7 +279,7 @@ function mapPadiError(status: number, text: string, json: unknown, flow: "passwo
   if (flow === "refresh") {
     if (status >= 400 && status < 500 && status !== 429) return new PadiAuthError("expired", MSG.expired);
   } else {
-    if (/attempts exceeded/i.test(message)) return new PadiAuthError("bad_credentials", MSG.locked);
+    if (/attempts exceeded/i.test(message)) return new PadiAuthError("bad_credentials", MSG.locked, { refusal: "locked" });
     if (/Incorrect username or password|NotAuthorized|UserNotFound|user does not exist|invalid (username|credentials|password)/i.test(message)) {
       return new PadiAuthError("bad_credentials", MSG.badCredentials);
     }

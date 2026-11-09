@@ -51,6 +51,7 @@ beforeAll(async () => {
     operator: { PADI_COGNITO_URL: "http://127.0.0.1:1/", PADI_AUTH_URL: "http://127.0.0.1:1/auth/api", PADI_LOGBOOK_URL: "http://127.0.0.1:1/api/Logbook" },
     log: (m) => logs.push(m),
     sendNotice: fake,
+    notifyFrom: "notify@example.com",
     // A request is e-mailed 100 ms after it comes in; retries only when a test calls flush().
     noticeTiming: { delayMs: 100, gapMs: 0, retryMs: [3_600_000, 3_600_000] },
   });
@@ -206,6 +207,7 @@ describe("e-mails about access requests", () => {
       store: store(),
       publicUrl: new URL(base),
       log: () => {},
+      from: "notify@example.com",
       send: async () => void seen.push(store().listUnnotifiedAccessRequests().length),
     });
     try {
@@ -321,6 +323,7 @@ describe("timing", () => {
       store: store(),
       publicUrl: new URL(base),
       log: () => {},
+      from: "notify@example.com",
       send: async () => void mails.push(Date.now()),
       delayMs: 50,
       gapMs: 400,
@@ -349,6 +352,7 @@ describe("timing", () => {
       store: store(),
       publicUrl: new URL(base),
       log: () => {},
+      from: "notify@example.com",
       send: async () => {
         tries.push(Date.now());
         throw smtpError("ECONNECTION");
@@ -380,7 +384,7 @@ describe("timing", () => {
     // Requests waiting in the database and never e-mailed (the server stopped first).
     request("restart@example.com");
     const mails: NoticeMail[] = [];
-    const notices = new RequestNotices({ store: store(), publicUrl: new URL(base), log: () => {}, send: async (m) => void mails.push(m), delayMs: 20 });
+    const notices = new RequestNotices({ store: store(), publicUrl: new URL(base), log: () => {}, from: "notify@example.com", send: async (m) => void mails.push(m), delayMs: 20 });
     try {
       notices.start();
       await vi.waitFor(() => expect(mails).toHaveLength(1), { timeout: 2000 });
@@ -393,7 +397,7 @@ describe("timing", () => {
 
   it("sends nothing after close", async () => {
     const mails: NoticeMail[] = [];
-    const notices = new RequestNotices({ store: store(), publicUrl: new URL(base), log: () => {}, send: async (m) => void mails.push(m), delayMs: 20 });
+    const notices = new RequestNotices({ store: store(), publicUrl: new URL(base), log: () => {}, from: "notify@example.com", send: async (m) => void mails.push(m), delayMs: 20 });
     request("closed@example.com");
     notices.requested();
     await notices.close();
@@ -417,6 +421,19 @@ describe("the operator's SMTP settings", () => {
     const ok = webOptionsFromEnv(env({ SMTP_URL: "smtp://u:p@mail.example.com:587", NOTIFY_FROM: "MCP for PADI <noreply@example.com>" }), {}, () => {});
     expect(ok).toMatchObject({ smtpUrl: "smtp://u:p@mail.example.com:587", notifyFrom: "MCP for PADI <noreply@example.com>" });
     expect(webOptionsFromEnv(env({}), {}, () => {}).smtpUrl).toBeUndefined();
+    // A sender is needed: the SMTP user name when it is an address, or NOTIFY_FROM.
+    expect(webOptionsFromEnv(env({ SMTP_URL: "smtps://notify%40example.com:p@mail.example.com:465" }), {}, () => {}).notifyFrom).toBeUndefined();
+    for (const user of ["apikey", "AKIAEXAMPLE"]) {
+      expect(() => webOptionsFromEnv(env({ SMTP_URL: `smtps://${user}:secret-pass@mail.example.com:465` }), {}, () => {})).toThrow(/NOTIFY_FROM/);
+    }
+  });
+
+  it("never sends as the administrator's own address", async () => {
+    // Relays such as SES or SendGrid refuse unknown senders: the server does not start without one.
+    await expect(
+      createWebApp({ publicUrl: new URL(base), host: "127.0.0.1", port: 0, dataDir: ":memory:", operator: {}, smtpUrl: "smtps://apikey:secret-pass@127.0.0.1:1", log: () => {} }),
+    ).rejects.toThrow(/NOTIFY_FROM/);
+    expect(() => new RequestNotices({ store: store(), publicUrl: new URL(base), log: () => {}, send: fake })).toThrow(/sender/);
   });
 
   it("sends from the SMTP user when it is an address and NOTIFY_FROM is not set", async () => {
@@ -444,12 +461,17 @@ describe("the operator's SMTP settings", () => {
 });
 
 describe("sending through the operator's SMTP server", () => {
+  /** Sign-ins the test SMTP server saw, and whether each one was encrypted. */
+  const signIns: { password: string; secure: boolean }[] = [];
+
   it("signs in with the SMTP_URL details and sends an automatic plain-text e-mail", async () => {
     const received: { from: string; to: string[]; raw: string }[] = [];
     const smtp = new SMTPServer({
+      // A server without TLS: only a URL that allows clear text (?requireTLS=false) may use it.
       disabledCommands: ["STARTTLS"],
       allowInsecureAuth: true,
-      onAuth(auth, _session, cb) {
+      onAuth(auth, session, cb) {
+        signIns.push({ password: auth.password ?? "", secure: session.secure });
         if (auth.username === "notify" && auth.password === "smtp-test-password") return cb(null, { user: "notify" });
         cb(Object.assign(new Error("Authentication failed"), { responseCode: 535 }));
       },
@@ -465,7 +487,16 @@ describe("sending through the operator's SMTP server", () => {
     await new Promise<void>((r) => smtp.listen(0, "127.0.0.1", () => r()));
     const port = (smtp.server.address() as AddressInfo).port;
     try {
-      await smtpSender(`smtp://notify:smtp-test-password@127.0.0.1:${port}`)({ to: "admin@example.com", from: "notify@example.com", subject: "New access request for MCP for PADI", text: "Someone asked.\n> hi" });
+      // smtp:// without STARTTLS: refused before the password is sent (someone on the network
+      // could have removed the STARTTLS offer).
+      const clear = await smtpSender(`smtp://notify:smtp-test-password@127.0.0.1:${port}`)({ to: "admin@example.com", from: "notify@example.com", subject: "x", text: "x" }).catch((e: unknown) => e);
+      expect((clear as { code?: string }).code).toBe("ETLS");
+      expect(classifySendError(clear)).toBe("network");
+      expect(signIns).toEqual([]);
+      expect(received).toEqual([]);
+
+      // The operator can allow clear text on purpose (a mail server on the same machine).
+      await smtpSender(`smtp://notify:smtp-test-password@127.0.0.1:${port}?requireTLS=false`)({ to: "admin@example.com", from: "notify@example.com", subject: "New access request for MCP for PADI", text: "Someone asked.\n> hi" });
       expect(received).toHaveLength(1);
       expect(received[0]!.from).toBe("notify@example.com");
       expect(received[0]!.to).toEqual(["admin@example.com"]);
@@ -473,7 +504,7 @@ describe("sending through the operator's SMTP server", () => {
       expect(received[0]!.raw).toMatch(/Auto-Submitted: auto-generated/i);
       expect(received[0]!.raw).toContain("Content-Type: text/plain");
 
-      const refused = await smtpSender(`smtp://notify:wrong@127.0.0.1:${port}`)({ to: "admin@example.com", from: "notify@example.com", subject: "x", text: "x" }).catch((e: unknown) => e);
+      const refused = await smtpSender(`smtp://notify:wrong@127.0.0.1:${port}?requireTLS=false`)({ to: "admin@example.com", from: "notify@example.com", subject: "x", text: "x" }).catch((e: unknown) => e);
       expect(classifySendError(refused)).toBe("auth");
     } finally {
       await new Promise<void>((r) => smtp.close(() => r()));

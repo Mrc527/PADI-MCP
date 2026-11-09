@@ -2,12 +2,13 @@
  * E-mails administrators when someone requests access (the waitlist).
  *
  * The e-mails go through the operator's SMTP server (SMTP_URL), from NOTIFY_FROM (or the SMTP user
- * name when it is an e-mail address) to the address each administrator signs in with. Without SMTP_URL no e-mail is sent: the admin page still lists
- * the requests. Requests that come close together arrive in one e-mail: the first one
- * about a minute after a request, the next ones at least ten minutes apart. Which requests were
- * already reported is stored in the database, so a restart (a deploy) neither loses nor repeats
- * one. When no e-mail can be sent, it is tried again a few times, then given up: the requests are
- * still listed on the admin page.
+ * name when it is an e-mail address) to the address each administrator signs in with. The
+ * connection to the SMTP server must be encrypted (see smtpSender). Without SMTP_URL no e-mail
+ * is sent: the admin page still lists the requests. Requests that come close together arrive in
+ * one e-mail: the first one about a minute after a request, the next ones at least ten minutes
+ * apart. Which requests were already reported is stored in the database, so a restart (a deploy)
+ * neither loses nor repeats one. When no e-mail can be sent, it is tried again a few times, then
+ * given up: the requests are still listed on the admin page.
  *
  * The address and the message of a request are typed by a stranger: the e-mail is plain text,
  * the subject never contains them, invisible, control and direction-changing characters are
@@ -25,7 +26,7 @@ export type NoticeProblem = "noSmtp" | "invalid" | "auth" | "network" | "rejecte
 export interface NoticeMail {
   /** The administrator's address. */
   to: string;
-  /** NOTIFY_FROM, or the administrator's address. */
+  /** NOTIFY_FROM, or the SMTP user name when it is an e-mail address. */
   from: string;
   subject: string;
   text: string;
@@ -41,7 +42,7 @@ export interface NoticeResult {
 }
 
 export interface NoticeStatus {
-  /** Where the e-mails go (and come from). Absent when they cannot be sent. */
+  /** Where the e-mails go. Absent when they cannot be sent. */
   address?: string;
   /** Why no e-mail can be sent (no SMTP server configured, no valid address). */
   problem?: NoticeProblem;
@@ -64,7 +65,11 @@ export interface RequestNoticesOptions extends NoticeTiming {
   log: (m: string) => void;
   /** How e-mails are sent. None: no e-mail is sent (no SMTP_URL). */
   send?: NoticeSender;
-  /** Sender address (NOTIFY_FROM, or the SMTP user when it is an e-mail address). Default: the administrator's own address. */
+  /**
+   * Sender address (NOTIFY_FROM, or the SMTP user when it is an e-mail address). Needed with
+   * `send`: the administrator's own address is not used, because the operator's SMTP server
+   * usually may not send as that address (it refuses the e-mail, or the e-mail bounces).
+   */
   from?: string;
 }
 
@@ -72,15 +77,16 @@ export interface RequestNoticesOptions extends NoticeTiming {
 export const MAX_LISTED = 10;
 
 /**
- * Checks SMTP_URL (smtp://user:pass@host:587 or smtps://user:pass@host:465). Returns an error
- * message (that never contains the URL, which holds a password), or undefined when it is fine.
+ * Checks SMTP_URL (smtps://user:pass@host:465, or smtp://user:pass@host:587 with STARTTLS).
+ * Returns an error message (that never contains the URL, which holds a password), or undefined
+ * when it is fine.
  */
 export function smtpUrlProblem(smtpUrl: string): string | undefined {
   let url: URL;
   try {
     url = new URL(smtpUrl);
   } catch {
-    return "SMTP_URL is not a valid URL (for example smtp://user:password@mail.example.com:587)";
+    return "SMTP_URL is not a valid URL (for example smtps://user:password@mail.example.com:465)";
   }
   if (url.protocol !== "smtp:" && url.protocol !== "smtps:") return "SMTP_URL must start with smtp:// or smtps://";
   if (!url.hostname) return "SMTP_URL has no host name";
@@ -97,10 +103,19 @@ export function smtpUserAddress(smtpUrl: string): string | undefined {
   }
 }
 
-/** Sends through the operator's SMTP server, given as a URL (smtps://user:pass@host:465). */
+/**
+ * Sends through the operator's SMTP server, given as a URL (smtps://user:pass@host:465).
+ *
+ * The connection must be encrypted before the password is sent. smtps:// uses TLS from the
+ * start. For smtp:// nodemailer would only switch to TLS when the server offers STARTTLS, and
+ * someone on the network can remove that offer: then the password and the e-mail would go out
+ * in clear text. requireTLS makes the send fail instead. An operator can turn this off on
+ * purpose with ?requireTLS=false in the URL (the URL's options win), for example for a mail
+ * server on the same machine.
+ */
 export function smtpSender(smtpUrl: string): NoticeSender {
   return async (mail) => {
-    const transport = nodemailer.createTransport(smtpUrl);
+    const transport = nodemailer.createTransport({ url: smtpUrl, requireTLS: true });
     try {
       await sendOne(transport, mail);
     } finally {
@@ -216,6 +231,7 @@ export class RequestNotices {
   private readonly results = new Map<string, NoticeResult>();
 
   constructor(private readonly opts: RequestNoticesOptions) {
+    if (opts.send && !opts.from) throw new Error("A sender address is needed to send e-mails (NOTIFY_FROM)");
     this.store = opts.store;
     this.send = opts.send;
     this.delayMs = opts.delayMs ?? 60_000;
@@ -251,7 +267,7 @@ export class RequestNotices {
     const site = this.opts.publicUrl.host;
     const mail: NoticeMail = {
       to: recipient.address,
-      from: this.opts.from ?? recipient.address,
+      from: this.opts.from!,
       subject: t("admin.notices.test.subject", { app }, lang),
       text: [t("admin.notices.test.text", { site }, lang), "", "-- ", this.footer(lang)].join("\n"),
     };
@@ -383,7 +399,7 @@ export class RequestNotices {
     lines.push("-- ", this.footer(lang));
     return {
       to: to.address,
-      from: this.opts.from ?? to.address,
+      from: this.opts.from!,
       subject: tn("admin.notices.mail.subject", requests.length, { app }, lang),
       text: lines.join("\n"),
     };

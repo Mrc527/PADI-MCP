@@ -555,15 +555,18 @@ Base `https://logbook-images-api.padi.com/api/Image`, `Authorization: Bearer <ID
   Surface Marker Buoy Dive, Dive Against Debris Diver (AWARE), Diver Propulsion Vehicle (DPV),
   Enriched Air Diver, Full Face Mask Diver, Ice Diver, Rebreather Diver, Self-Reliant Diver, Shark
   Conservation Dive(AWARE), Sidemount Diver (exact spellings).
-- **Skills** (`dive_skills`, a `text[]`):
-  - `Open`, `Rescue`, `Reactivate`: at least one of `"no skills"`, `"cramp removal"`,
-    `"snorkel exchange"`, `"tube deployment"`, `"weight drop"`, `"swim compass"`, `"diver tow"`,
-    `"remove scuba"`, `"remove weights"`, plus `"controlled ascent"` and `"compass navigation"`
-    for every dive except Open Water dive 1.
-  - `Rescue` exercises: `"tired diver"`, `"panicked diver"`, `"responsive diver"`,
+- **Skills** (`dive_skills`, a `text[]`), as the web form offers them for each course. `Open`,
+  `Rescue` and `Reactivate` dives need at least one:
+  - `Open`: the "flexible skills" `"no skills"`, `"cramp removal"`, `"snorkel exchange"`,
+    `"tube deployment"`, `"weight drop"`, `"swim compass"`, `"diver tow"`, `"remove scuba"`,
+    `"remove weights"`, plus `"controlled ascent"` and `"compass navigation"` for dives 2 to 4
+    (not dive 1).
+  - `Rescue`: only the exercises `"tired diver"`, `"panicked diver"`, `"responsive diver"`,
     `"distressed diver underwater"`, `"missing diver"`, `"surfacing the unresponsive diver"`,
     `"unresponsive diver at the surface"`, `"exiting the unresponsive diver"`,
     `"first aid for pressure"`, `"unresponsive diver"`.
+  - `Reactivate`: only the requirements `"mask flood"`, `"panicked diver"` (the form labels it
+    "buoyancy/weight check"), `"weight drop"`, `"alternate air"`, `"log dive"`.
   - Specialty: one free-text entry (for example `["Dry suit"]`).
   - Other courses store no skills.
 - The web app hides training dives that are already logged (same course and number), except
@@ -766,9 +769,14 @@ per second. Serialise writes, and back off on HTTP 429 and 5xx.
   inserted; delete is the single ordered mutation; locked dives are refused; a dive is sent for
   verification only after the instructor lookup found the Pro.
 - **Requests**: 20 s timeout, at most 3 tries with backoff on 429, 5xx and network errors. A write
-  is never sent again once it may have reached PADI.
-- **Not done**: photos are not deleted together with a dive (there is no photo delete in this
-  server yet), and photos cannot be uploaded.
+  is never sent again once it may have reached PADI (a timeout, a broken connection, or a 5xx
+  other than 501): the tool then says the change may have been saved and how to check before
+  trying again.
+- **Delete and photos**: this server does not delete photos. Before a delete it asks the photo
+  service for the dive's photos (10 s limit). A dive with photos is refused, and the error points
+  to the dive on learning.padi.com, where deleting also deletes the photos. If the photo service
+  does not answer, the dive is deleted and the answer says so (`photos_checked: false`).
+- **Not done**: photos cannot be uploaded or deleted.
 
 ---
 

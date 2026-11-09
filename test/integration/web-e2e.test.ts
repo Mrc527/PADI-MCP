@@ -23,6 +23,8 @@ const SECOND = { email: "lee.sample@example.com", password: "invented-password-3
 let server: Server;
 let web: WebApp;
 let mock: MockPadi;
+/** Every line the web service logged. */
+const logs: string[] = [];
 
 async function call<T = Record<string, unknown>>(client: Client, name: string, args: Record<string, unknown> = {}): Promise<T> {
   const res = await client.callTool({ name, arguments: args });
@@ -51,7 +53,7 @@ describe.skipIf(!enabled)("web mode against a mock PADI API", () => {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     setBase(base);
-    web = await createWebApp({ publicUrl: new URL(base), host: "127.0.0.1", port: 0, dataDir: ":memory:", operator: mock.env(), log: () => {} });
+    web = await createWebApp({ publicUrl: new URL(base), host: "127.0.0.1", port: 0, dataDir: ":memory:", operator: mock.env(), log: (m) => void logs.push(m) });
     server.on("request", web.app);
     // The first account is the administrator; the others sign up freely.
     expect((await new Browser().signup("admin@example.com", "correct horse battery")).status).toBe(303);
@@ -108,8 +110,10 @@ describe.skipIf(!enabled)("web mode against a mock PADI API", () => {
     const { browser, client } = await diver("again@example.com", MOCK_ACCOUNT);
     mock.revokeRefreshTokens();
     mock.expireIdTokens();
-    await expect(call(client, "logbook_list_dives")).rejects.toThrow();
-    await expect(call(client, "logbook_list_dives")).rejects.toThrow(/Your PADI sign-in expired. Sign in again at http:\/\/127\.0\.0\.1:\d+\/account/);
+    // The call that finds the dead sign-in, and the calls after it, say where to sign in again.
+    const expired = /Your PADI sign-in expired\. Sign in again at http:\/\/127\.0\.0\.1:\d+\/account/;
+    await expect(call(client, "logbook_list_dives")).rejects.toThrow(expired);
+    await expect(call(client, "logbook_list_dives")).rejects.toThrow(expired);
     const id = web.ctx.store.getUserByEmail("again@example.com")!.id;
     expect(web.ctx.store.getUser(id)!.padiNeedsReconnect).toBe(true);
     // The administrator sees it too.
@@ -119,5 +123,32 @@ describe.skipIf(!enabled)("web mode against a mock PADI API", () => {
     expect(again.headers.get("location")).toBe("/account?m=connected");
     expect((await call<{ total: number }>(client, "logbook_list_dives", { limit: 1 })).total).toBeGreaterThan(0);
     await client.close();
+  });
+
+  it("never writes PADI passwords, tokens or e-mail addresses to the log", async () => {
+    // A wrong password on the account page, and a tool call that fails.
+    const browser = new Browser();
+    expect((await browser.signup("wrong@example.com", "correct horse battery")).status).toBe(303);
+    const { csrf } = await browser.page("/account");
+    const wrong = await browser.post("/account/padi", { _csrf: csrf, email: SECOND.email, password: "wrong-password-value" });
+    expect(wrong.status).toBe(400);
+    const { client } = await diver("tool@example.com", SECOND);
+    await expect(call(client, "logbook_get_dive", { dive_id: 999_999_999 })).rejects.toThrow(/not found/);
+    await client.close();
+
+    const all = logs.join("\n");
+    // The flows above did log (else this test would check nothing).
+    expect(all).toContain("PADI sign-in on the account page failed");
+    expect(all).toContain("PADI connection saved for a user");
+    expect(all).toMatch(/Tool logbook_list_dives failed/);
+    expect(all).toMatch(/Tool logbook_get_dive failed/);
+    const users = ["river@example.com", "lee@example.com", "again@example.com", "wrong@example.com", "tool@example.com"];
+    const refreshTokens = users.map((u) => web.ctx.store.getPadiSettings(web.ctx.store.getUserByEmail(u)!.id)?.refreshToken).filter((t): t is string => !!t);
+    expect(refreshTokens.length).toBeGreaterThan(0);
+    for (const secret of [MOCK_ACCOUNT.password, SECOND.password, "wrong-password-value", MOCK_ACCOUNT.email, SECOND.email, "admin@example.com", ...users, ...refreshTokens]) {
+      expect(all.includes(secret), `the log holds ${secret.slice(0, 6)}...`).toBe(false);
+    }
+    // ID tokens, and refresh tokens shaped like a JWT.
+    expect(all).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}/);
   });
 });

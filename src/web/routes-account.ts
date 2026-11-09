@@ -11,10 +11,11 @@ import express, { type Request, type Response, type Router } from "express";
 import { DEMO_ADDRESS, DEMO_NAME, DEMO_TIME_ZONE } from "../demo/index.js";
 import type { BackendCheck, UnitChoice } from "../logbook/types.js";
 import { PadiApi, type ApiMode } from "../padi/api.js";
-import { signIn } from "../padi/auth.js";
+import { PadiAuthError, signIn, type PadiAuthErrorCode } from "../padi/auth.js";
 import { endpointsFromEnv } from "../padi/endpoints.js";
 import { PadiSession } from "../padi/session.js";
-import { describeError } from "../util/errors.js";
+import { isValidTimeZone } from "../util/dates.js";
+import { describeError, UserFacingError } from "../util/errors.js";
 import { connectCard } from "./connect.js";
 import { bool, page, returnTo, str, type WebContext } from "./context.js";
 import { hashPassword, verifyPassword } from "./crypto.js";
@@ -42,6 +43,42 @@ function unitChoice(value: unknown): UnitChoice | undefined {
   return UNIT_CHOICES.find((u) => u === value);
 }
 
+let timeZones: string[] | undefined;
+/** Every time zone the server knows, "UTC" first. */
+function allTimeZones(): string[] {
+  // Intl's list leaves out "UTC" itself; without it the form would show the first zone instead.
+  timeZones ??= ["UTC", ...Intl.supportedValuesOf("timeZone").filter((tz) => tz !== "UTC")];
+  return timeZones;
+}
+
+/** Why a PADI sign-in failed, by the PADI client's error code. */
+const SIGN_IN_ERRORS: Record<Exclude<PadiAuthErrorCode, "unknown">, MessageKey> = {
+  bad_credentials: "account.error.padi.badCredentials",
+  challenge: "account.error.padi.challenge",
+  expired: "account.error.padi.expired",
+  not_confirmed: "account.error.padi.notConfirmed",
+  password_reset: "account.error.padi.passwordReset",
+  network: "account.error.padi.network",
+};
+
+/**
+ * Why "Save and test" could not sign in to PADI, in the page's language. The PADI client's own
+ * texts are English and end with an internal code ("[bad_credentials]"), so they are only used
+ * as the detail of an unexpected answer.
+ */
+export function signInError(error: unknown): string {
+  return t("account.error.signIn", { error: signInReason(error) });
+}
+
+function signInReason(error: unknown): string {
+  if (!(error instanceof PadiAuthError)) return error instanceof UserFacingError ? error.message : describeError(error);
+  // PADI also refuses a blocked or a disabled account as "wrong e-mail or password".
+  if (error.refusal === "locked") return t("account.error.padi.locked");
+  if (error.refusal === "disabled") return t("account.error.padi.disabled");
+  if (error.code === "unknown") return t("account.error.padi.unknown", { detail: error.message });
+  return t(SIGN_IN_ERRORS[error.code]);
+}
+
 /** How long a dive count read for the account page is reused. */
 const CHECK_CACHE_MS = 5 * 60_000;
 /** The account page waits this long for the dive count. */
@@ -57,6 +94,7 @@ interface SignInValues {
   email: string;
   units: UnitChoice;
   readOnly: boolean;
+  timeZone: string;
 }
 
 /** `promise`, or `onTimeout` when it takes longer than `ms`. */
@@ -116,6 +154,14 @@ export function accountRoutes(ctx: WebContext): Router {
     html`<label for="${id}">${t("account.padi.units")}<span class="hint">${t("account.padi.unitsHint")}</span></label>
       <select id="${id}" name="units">${UNIT_CHOICES.map((u) => html`<option value="${u}" ${u === units ? "selected" : ""}>${t(UNIT_LABELS[u])}</option>`)}</select>`;
 
+  /** The time zone; with `browser`, the page selects the browser's own zone when it is known. */
+  const timeZoneField = (id: string, timeZone: string, browser = false) => {
+    const list = allTimeZones();
+    const options = list.includes(timeZone) ? list : [timeZone, ...list];
+    return html`<label for="${id}">${t("account.padi.timeZone")}<span class="hint">${t("account.padi.timeZoneHint")}</span></label>
+      <select id="${id}" name="timeZone"${browser ? html` data-browser-tz` : ""}>${options.map((tz) => html`<option value="${tz}" ${tz === timeZone ? "selected" : ""}>${tz}</option>`)}</select>`;
+  };
+
   const tile = (service: Service, name: MessageKey, text: MessageKey, state: SafeHtml) =>
     html`<div class="tile"><div class="tile-head">${serviceIcon(service, "lg")}<strong>${t(name)}</strong></div><p>${t(text)}</p>${state}</div>`;
 
@@ -165,8 +211,11 @@ export function accountRoutes(ctx: WebContext): Router {
     );
   };
 
-  /** The fields of a PADI sign-in, and the "Save and test" button. */
-  const signInFields = (values: SignInValues, withSettings: boolean, enforced: boolean) =>
+  /**
+   * The fields of a PADI sign-in, and the "Save and test" button. `browserTimeZone`: nothing was
+   * chosen yet, so the page may select the browser's time zone.
+   */
+  const signInFields = (values: SignInValues, withSettings: boolean, enforced: boolean, browserTimeZone = false) =>
     html`<div class="row">
         <div>
           <label for="email">${t("account.padi.email")}</label>
@@ -178,7 +227,7 @@ export function accountRoutes(ctx: WebContext): Router {
         </div>
       </div>
       ${withSettings
-        ? html`<div class="row"><div>${unitsField("units", values.units)}</div></div>
+        ? html`<div class="row"><div>${unitsField("units", values.units)}</div><div>${timeZoneField("timeZone", values.timeZone, browserTimeZone)}</div></div>
             <div class="group">${readOnlyBox(values.readOnly, enforced)}</div>`
         : html`<input type="hidden" name="keep" value="settings">`}
       <div class="actions"><button type="submit">${t("account.padi.saveAndTest")}</button></div>`;
@@ -201,7 +250,12 @@ export function accountRoutes(ctx: WebContext): Router {
     const expired = !!stored && (ctx.store.getUser(s.user.id)?.padiNeedsReconnect ?? s.user.padiNeedsReconnect);
     const readOnly = server.forceReadOnly || stored?.readOnly === true;
     const csrf = html`<input type="hidden" name="_csrf" value="${s.csrf}">${returnTo(req) ? html`<input type="hidden" name="next" value="${returnTo(req)}">` : ""}`;
-    const values: SignInValues = opts.values ?? { email: stored?.email ?? "", units: stored?.units ?? "auto", readOnly: stored?.readOnly ?? false };
+    const values: SignInValues = opts.values ?? {
+      email: stored?.email ?? "",
+      units: stored?.units ?? "auto",
+      readOnly: stored?.readOnly ?? false,
+      timeZone: stored?.timeZone || server.defaultTimeZone,
+    };
 
     const logbookState = !stored
       ? html`<span class="badge warn">${t("account.state.notConnected")}</span>`
@@ -247,7 +301,7 @@ export function accountRoutes(ctx: WebContext): Router {
           <h3>${t("account.padi.settingsHeading")}</h3>
           <form method="post" action="/account/padi/settings">
             ${csrf}
-            <div class="row"><div>${unitsField("units-saved", stored.units)}</div></div>
+            <div class="row"><div>${unitsField("units-saved", stored.units)}</div><div>${timeZoneField("timeZone-saved", stored.timeZone || server.defaultTimeZone)}</div></div>
             <div class="group">${readOnlyBox(stored.readOnly, server.forceReadOnly)}</div>
             <div class="actions"><button type="submit">${t("account.padi.save")}</button></div>
           </form>
@@ -268,7 +322,7 @@ export function accountRoutes(ctx: WebContext): Router {
           <h2>${t("account.padi.heading")} ${badge}</h2>
           ${read.unreadable ? html`<div class="flash error">${t("account.padi.unreadable")}</div>` : ""}
           ${help}
-          <form method="post" action="/account/padi" autocomplete="off">${csrf}${signInFields(values, true, server.forceReadOnly)}</form>
+          <form method="post" action="/account/padi" autocomplete="off">${csrf}${signInFields(values, true, server.forceReadOnly, !opts.values)}</form>
         </div>`;
 
     const line = !stored
@@ -308,6 +362,7 @@ export function accountRoutes(ctx: WebContext): Router {
       units: keep ? existing.units : (unitChoice(req.body.units) ?? existing?.units ?? "auto"),
       // While the administrator enforces read-only, the (disabled) box is not sent: keep the user's choice.
       readOnly: keep || server.forceReadOnly ? (existing?.readOnly ?? false) : bool(req.body.readOnly),
+      timeZone: (keep ? existing.timeZone : str(req.body.timeZone, 100).trim() || existing?.timeZone) || server.defaultTimeZone,
     };
     if (!csrfOk(req, res, ctx.cookies)) return renderAccount(req, res, { values, error: t("account.error.formExpired"), status: 400 });
     // A demo account never gets a PADI connection (and never signs in to PADI).
@@ -315,6 +370,7 @@ export function accountRoutes(ctx: WebContext): Router {
     const password = str(req.body.password, 500);
     if (!values.email || !password) return renderAccount(req, res, { values, error: t("account.error.missing"), status: 400 });
     if (!isEmail(values.email)) return renderAccount(req, res, { values, error: t("account.error.email"), status: 400 });
+    if (!isValidTimeZone(values.timeZone)) return renderAccount(req, res, { values, error: t("account.error.timeZone"), status: 400 });
 
     // The operator's PADI endpoints and API mode, as every user's services get them.
     let endpoints;
@@ -331,7 +387,7 @@ export function accountRoutes(ctx: WebContext): Router {
       result = await signIn(values.email, password, { method: "auto", endpoints, ...fetchOpt });
     } catch (error) {
       ctx.log("PADI sign-in on the account page failed");
-      return renderAccount(req, res, { values, error: t("account.error.signIn", { error: describeError(error) }), status: 400 });
+      return renderAccount(req, res, { values, error: signInError(error), status: 400 });
     }
 
     const settings: PadiAccountSettings = {
@@ -343,6 +399,7 @@ export function accountRoutes(ctx: WebContext): Router {
       ...(result.claims.name ? { name: result.claims.name } : {}),
       units: values.units,
       readOnly: values.readOnly,
+      timeZone: values.timeZone,
       connectedAt: Date.now(),
     };
     ctx.store.savePadiSettings(s.user.id, settings);
@@ -359,21 +416,26 @@ export function accountRoutes(ctx: WebContext): Router {
       { ok: false, timeout: true },
     );
     await api.close();
+    // A timeout is not kept (like on the page): the next page tries again, as it says.
     const user = ctx.store.getUser(s.user.id);
-    if (user) remember(user, check);
+    if (user && !("timeout" in check)) remember(user, check);
     res.redirect(303, returnTo(req) ?? (check.ok ? "/account?m=connected" : "/account?m=logbookfailed"));
   });
 
-  /** Units and read-only switch of a saved connection (no sign-in). */
+  /** Units, read-only switch and time zone of a saved connection (no sign-in). */
   r.post("/account/padi/settings", form, async (req, res) => {
     const s = locals(res).session!;
     if (!csrfOk(req, res, ctx.cookies)) return void res.redirect(303, "/account?m=csrf");
     const existing = ctx.store.getPadiSettings(s.user.id);
     if (s.user.demo || !existing) return void res.redirect(303, "/account");
     const server = ctx.store.getSettings();
+    // A form without the field keeps the saved zone.
+    const timeZone = str(req.body.timeZone, 100).trim() || undefined;
+    if (timeZone && !isValidTimeZone(timeZone)) return renderAccount(req, res, { error: t("account.error.timeZone"), status: 400 });
     ctx.store.savePadiPreferences(s.user.id, {
       units: unitChoice(req.body.units) ?? existing.units,
       readOnly: server.forceReadOnly ? existing.readOnly : bool(req.body.readOnly),
+      ...(timeZone ? { timeZone } : {}),
     });
     await ctx.pool.invalidate(s.user.id);
     res.redirect(303, returnTo(req) ?? "/account?m=saved");

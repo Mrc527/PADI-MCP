@@ -414,7 +414,10 @@ export function parseAdventureDive(input: string): string | undefined {
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-/** "Flexible skills" of Open Water, Rescue and ReActivate dives. */
+/**
+ * "Flexible skills" of Open Water dives (the only course whose PADI form offers them). The first
+ * one, "no skills", says that no flexible skill was done on the dive.
+ */
 export const FLEXIBLE_SKILLS = [
   "no skills",
   "cramp removal",
@@ -427,10 +430,10 @@ export const FLEXIBLE_SKILLS = [
   "remove weights",
 ] as const;
 
-/** Extra flexible skills, offered for every dive except Open Water dive 1. */
+/** Extra flexible skills, offered for Open Water dives 2, 3 and 4 (not dive 1). */
 export const LATER_SKILLS = ["controlled ascent", "compass navigation"] as const;
 
-/** Rescue Diver exercises. */
+/** Rescue Diver exercises (the only skills a Rescue dive offers). */
 export const RESCUE_EXERCISES = [
   "tired diver",
   "panicked diver",
@@ -444,14 +447,44 @@ export const RESCUE_EXERCISES = [
   "unresponsive diver",
 ] as const;
 
+/**
+ * ReActivate requirements (the only skills a ReActivate dive offers). These are PADI's stored
+ * values: "panicked diver" is the value of the "buoyancy / weight check" item.
+ */
+export const REACTIVATE_REQUIREMENTS = ["mask flood", "panicked diver", "weight drop", "alternate air", "log dive"] as const;
+
+/** The labels of the PADI form that differ from the stored value, by course (label -> value). */
+const SKILL_LABELS: Partial<Record<TrainingCourse, Record<string, string>>> = {
+  Reactivate: { "buoyancy/weight check": "panicked diver", "buoyancy check": "panicked diver", "weight check": "panicked diver" },
+};
+
+/** The stored value of a skill for a course: a known value or form label in PADI's spelling, else undefined. */
+export function canonicalSkill(course: TrainingCourse, logNumber: number | null | undefined, input: string): string | undefined {
+  const key = enumKey(input);
+  const known = allowedSkills(course, logNumber).find((value) => enumKey(value) === key);
+  if (known) return known;
+  const labels = SKILL_LABELS[course] ?? {};
+  const label = Object.keys(labels).find((l) => enumKey(l) === key);
+  return label ? labels[label] : undefined;
+}
+
 /** Courses whose dives store chosen skills (at least one is needed before verification). */
 export const SKILL_COURSES: readonly TrainingCourse[] = ["Open", "Rescue", "Reactivate"];
 
-/** The skills a training dive may store (Specialty: one free-text entry, not listed here). */
+/**
+ * The skills a training dive may store, as the PADI web form offers them (Specialty: one
+ * free-text entry, not listed here): Open Water the flexible skills, Rescue the exercises,
+ * ReActivate the requirements.
+ */
 export function allowedSkills(course: TrainingCourse, logNumber: number | null | undefined): readonly string[] {
-  if (!SKILL_COURSES.includes(course)) return [];
-  const base: string[] = [...FLEXIBLE_SKILLS];
-  if (logNumber !== 1) base.push(...LATER_SKILLS);
-  if (course === "Rescue") base.push(...RESCUE_EXERCISES);
-  return base;
+  switch (course) {
+    case "Open":
+      return logNumber === 1 ? [...FLEXIBLE_SKILLS] : [...FLEXIBLE_SKILLS, ...LATER_SKILLS];
+    case "Rescue":
+      return [...RESCUE_EXERCISES];
+    case "Reactivate":
+      return [...REACTIVATE_REQUIREMENTS];
+    default:
+      return [];
+  }
 }

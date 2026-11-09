@@ -92,11 +92,19 @@ describe("other catalogues", () => {
     expect(parseAdventureDive("Diver Propulsion Vehicle (DPV)")).toBe("Diver Propulsion Vehicle (DPV)");
   });
 
-  it("lists the allowed skills per course and dive", () => {
+  it("lists the allowed skills per course and dive, as the PADI form offers them", () => {
+    expect(allowedSkills("Open", 1)).toContain("no skills");
     expect(allowedSkills("Open", 1)).not.toContain("controlled ascent");
     expect(allowedSkills("Open", 2)).toContain("controlled ascent");
+    // Rescue: the 10 exercises only.
+    expect(allowedSkills("Rescue", 10)).toHaveLength(10);
     expect(allowedSkills("Rescue", 10)).toContain("tired diver");
+    expect(allowedSkills("Rescue", 11)).not.toContain("no skills");
+    expect(allowedSkills("Rescue", 11)).not.toContain("controlled ascent");
+    // ReActivate: the requirements only (PADI's value of "buoyancy / weight check" is "panicked diver").
+    expect(allowedSkills("Reactivate", 13)).toEqual(["mask flood", "panicked diver", "weight drop", "alternate air", "log dive"]);
     expect(allowedSkills("Advanced", 5)).toEqual([]);
+    expect(allowedSkills("DSD", 12)).toEqual([]);
   });
 
   it("spells equipment the PADI way", () => {

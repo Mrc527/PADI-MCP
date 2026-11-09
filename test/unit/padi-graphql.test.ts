@@ -3,6 +3,7 @@ import { listDocument } from "../../src/padi/documents.js";
 import { GraphqlClient, graphqlError, PadiGraphqlError } from "../../src/padi/graphql.js";
 import { PadiHttpError } from "../../src/padi/http.js";
 import { PadiSession } from "../../src/padi/session.js";
+import { UnconfirmedWriteError } from "../../src/util/errors.js";
 import { AFFILIATE_ID, cognitoOk, ENDPOINTS, idToken, json, mockFetch, type Recorded } from "./padi-fixtures.js";
 
 const T0 = 1_800_000_000_000;
@@ -118,13 +119,53 @@ describe("GraphQL transport", () => {
   it("auto mode does not resend a write that may have reached the proxy", async () => {
     const m = mockFetch(() => json({ message: "boom" }, 502));
     const c = client(m.fetch, "auto");
-    await expect(c.request(list, { write: true })).rejects.toThrow(/HTTP 502/);
+    // The write may have been saved: the error says to check, not to try again.
+    const first = await c.request(list, { write: true }).catch((e: unknown) => e);
+    expect(first).toBeInstanceOf(UnconfirmedWriteError);
+    expect((first as Error).message).toMatch(/may have been saved/);
+    expect((first as Error).message).not.toMatch(/try again later/i);
     expect(m.requests).toHaveLength(1);
     expect(c.mode).toBe("proxy");
     // The second failure in a row switches, but the write is still not resent.
-    await expect(c.request(list, { write: true })).rejects.toThrow(/HTTP 502/);
+    await expect(c.request(list, { write: true })).rejects.toBeInstanceOf(UnconfirmedWriteError);
     expect(c.mode).toBe("direct");
     expect(m.requests).toHaveLength(2);
+  });
+
+  it("reports a write that timed out or failed on PADI's side as unconfirmed, never as 'try again later'", async () => {
+    const timeout = () => {
+      throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+    };
+    for (const mode of ["proxy", "direct"] as const) {
+      const timedOut = mockFetch(timeout);
+      const err = await client(timedOut.fetch, mode).request(list, { write: true }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(UnconfirmedWriteError);
+      expect((err as Error).message).toMatch(/check the logbook/i);
+      expect((err as Error).message).not.toMatch(/try again later/i);
+      // Sent once only.
+      expect(timedOut.requests).toHaveLength(1);
+      const failed = mockFetch(() => json({}, 504));
+      await expect(client(failed.fetch, mode).request(list, { write: true })).rejects.toBeInstanceOf(UnconfirmedWriteError);
+      expect(failed.requests).toHaveLength(1);
+    }
+    // A read that times out keeps its message (it was tried 3 times and changes nothing).
+    const read = mockFetch(timeout);
+    const readErr = await client(read.fetch, "direct").request(list, { write: false }).catch((e: unknown) => e);
+    expect(readErr).toBeInstanceOf(PadiHttpError);
+    expect(readErr).not.toBeInstanceOf(UnconfirmedWriteError);
+    expect(read.requests).toHaveLength(3);
+    // A write that never left this server is not unconfirmed: nothing was sent.
+    const refused = mockFetch(() => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+    });
+    const refusedErr = await client(refused.fetch, "direct").request(list, { write: true }).catch((e: unknown) => e);
+    expect(refusedErr).toBeInstanceOf(PadiHttpError);
+    expect((refusedErr as PadiHttpError).sent).toBe(false);
+    // A 4xx answer to a write is a plain error (PADI refused it).
+    const bad = mockFetch(() => json({}, 400));
+    const badErr = await client(bad.fetch, "direct").request(list, { write: true }).catch((e: unknown) => e);
+    expect(badErr).not.toBeInstanceOf(UnconfirmedWriteError);
+    expect((badErr as Error).message).toMatch(/HTTP 400/);
   });
 
   it("proxy mode (not auto) reports 5xx after the read retries", async () => {

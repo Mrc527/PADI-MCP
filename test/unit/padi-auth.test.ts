@@ -219,12 +219,15 @@ describe("padiFetch", () => {
     expect(waits).toEqual([2000, 10000]);
   });
 
-  it("stops a request that takes too long", async () => {
+  it("stops a request that takes too long, and does not send a write again", async () => {
+    let calls = 0;
     const slow = (async (_url: string, init: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
+        calls++;
         init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
       })) as typeof fetch;
-    const err = await padiFetch("https://x.test/", { method: "POST" }, { fetch: slow, timeoutMs: 20, idempotent: false, what: "The PADI logbook" }).catch((e: unknown) => e);
+    const err = await padiFetch("https://x.test/", { method: "POST" }, { fetch: slow, timeoutMs: 20, idempotent: false, what: "The PADI logbook", ...noSleep }).catch((e: unknown) => e);
+    expect(calls).toBe(1);
     expect(err).toBeInstanceOf(PadiHttpError);
     expect((err as PadiHttpError).kind).toBe("timeout");
     expect((err as Error).message).toMatch(/The PADI logbook did not answer within 0 s/);

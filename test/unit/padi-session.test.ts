@@ -53,6 +53,22 @@ describe("PadiSession", () => {
     expect(sink.saved).toHaveLength(0);
   });
 
+  it("keeps a just-renewed short-lived token instead of refreshing on every call", async () => {
+    let now = T0;
+    // A token that already looks close to expiry (clock skew or a short lifetime).
+    const m = mockFetch(() => cognitoOk(idToken({ nowMs: now, lifetimeS: 90 })));
+    const s = new PadiSession({ tokens: { refreshToken: "stored", loginMethod: "cognito", clientId: "c" }, method: "auto", endpoints: ENDPOINTS, fetch: m.fetch, backoffMs: 0, now: () => now });
+    const a = await s.idToken();
+    now += 10_000;
+    expect(await s.idToken()).toBe(a);
+    await s.claims();
+    expect(m.requests).toHaveLength(1);
+    // After the short grace period it renews again.
+    now += 30_000;
+    await s.idToken();
+    expect(m.requests).toHaveLength(2);
+  });
+
   it("shares one refresh between concurrent callers", async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));

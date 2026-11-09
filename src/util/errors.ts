@@ -24,6 +24,20 @@ export class ConfigError extends UserFacingError {
   }
 }
 
+/**
+ * A write that may or may not have been saved: it reached PADI, but no answer came back (a
+ * timeout, a broken connection or an HTTP 5xx). Sending it again could save it twice, so the
+ * message says to check first.
+ */
+export class UnconfirmedWriteError extends UserFacingError {
+  readonly kind = "unconfirmed_write";
+
+  constructor(message = "PADI did not confirm the change, so it may have been saved anyway. Check the logbook (logbook_list_dives or logbook_get_dive) before you try again.", options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "UnconfirmedWriteError";
+  }
+}
+
 export class ReadOnlyError extends UserFacingError {
   constructor(action: string) {
     super(`This account is read-only (PADI_READ_ONLY=true); "${action}" is not allowed.`);

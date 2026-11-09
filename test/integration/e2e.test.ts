@@ -69,8 +69,35 @@ interface Summary {
   id: number;
   title: string;
   date: string;
+  type: string;
   status: string;
   locked: boolean;
+}
+
+/**
+ * logbook_list_dives with a log type or a status (filtered by PADI): the total and the dives are
+ * exactly those of the mock's logbook, so a filter that is declared but not applied is seen.
+ */
+async function expectFiltered(client: Client): Promise<void> {
+  const stored = [...mock.account.store.logs.values()];
+  const cases: Array<[Record<string, string>, (d: (typeof stored)[number]) => boolean]> = [
+    [{ log_type: "Training" }, (d) => d.log_type === "Training"],
+    [{ log_type: "Recreational" }, (d) => d.log_type === "Recreational"],
+    [{ status: "Verified" }, (d) => d.status === "Verified"],
+    [{ status: "Draft" }, (d) => d.status === "Draft"],
+  ];
+  for (const [filter, keep] of cases) {
+    const want = stored.filter(keep).map((d) => d.id).sort((a, b) => a - b);
+    const label = JSON.stringify(filter);
+    // Each filter keeps some dives but not all of them, so the check means something.
+    expect(want.length, label).toBeGreaterThan(0);
+    expect(want.length, label).toBeLessThan(stored.length);
+    const page = await call<{ total: number; dives: Summary[] }>(client, "logbook_list_dives", { ...filter, limit: 100 });
+    expect(page.total, label).toBe(want.length);
+    expect(page.dives.map((d) => d.id).sort((a, b) => a - b), label).toEqual(want);
+    if (filter.log_type) expect(page.dives.every((d) => d.type === filter.log_type), label).toBe(true);
+    if (filter.status) expect(page.dives.every((d) => d.status === filter.status), label).toBe(true);
+  }
 }
 
 describe.skipIf(!enabled)("against a mock PADI API", () => {
@@ -306,6 +333,7 @@ describe.skipIf(!enabled)("against a mock PADI API", () => {
       const stats = await call<{ count: number; total_bottom_time: string }>(client, "logbook_stats", { group_by: "year" });
       expect(stats.count).toBe(25);
       expect(stats.total_bottom_time).toMatch(/^\d+:\d{2}$/);
+      await expectFiltered(client);
       expect(mock.violations).toEqual([]);
     });
 
@@ -446,6 +474,7 @@ describe.skipIf(!enabled)("against a mock PADI API", () => {
       const { client } = await inProcess({ PADI_API_MODE: "direct" });
       const page = await call<{ total: number; dives: Summary[] }>(client, "logbook_list_dives", { limit: 3 });
       expect(page.total).toBeGreaterThan(20);
+      await expectFiltered(client);
       const created = await call<{ id: number }>(client, "logbook_create_dive", { title: "Direct dive", date: "2026-10-30", location: "Eel Garden", dive_type: "Boat", status: "Draft" });
       expect(mock.account.store.logs.get(created.id)!.status).toBe("Draft");
       const calls = mock.graphql.slice(before);

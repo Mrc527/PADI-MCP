@@ -12,13 +12,17 @@
  * On HTTP 401 or a GraphQL "invalid-jwt" error the token is refreshed once and the request sent
  * again (PADI did not handle it). Hasura errors (HTTP 200 with "errors") become UserFacingErrors
  * that name the field when possible.
+ *
+ * A write that reached PADI but got no answer (a timeout, a broken connection, HTTP 5xx) is not
+ * sent again, and its error is an UnconfirmedWriteError: the change may have been saved, so the
+ * caller must check before trying again (a new dive would otherwise be logged twice).
  */
 
-import { UserFacingError } from "../util/errors.js";
+import { UnconfirmedWriteError, UserFacingError } from "../util/errors.js";
 import type { ApiMode } from "./api.js";
 import type { GraphqlDocument, ResolvedMode } from "./documents.js";
 import type { PadiEndpoints } from "./endpoints.js";
-import { bodySnippet, padiFetch, parseJson, readText, statusError } from "./http.js";
+import { bodySnippet, PadiHttpError, padiFetch, parseJson, readText, statusError } from "./http.js";
 import type { PadiSession } from "./session.js";
 
 export interface GraphqlErrorEntry {
@@ -173,17 +177,24 @@ export class GraphqlClient {
       if (mode === "proxy") headers["affiliate-id"] = claims.affiliateId;
       else if (opts.write) headers["x-hasura-role"] = "user";
 
-      const res = await padiFetch(
-        mode === "direct" ? this.opts.endpoints.directUrl : this.opts.endpoints.logbookUrl,
-        { method: "POST", headers, body: JSON.stringify({ query: doc.query, variables: doc.variables }) },
-        {
-          ...(this.opts.fetch ? { fetch: this.opts.fetch } : {}),
-          ...(this.opts.timeoutMs ? { timeoutMs: this.opts.timeoutMs } : {}),
-          ...(this.opts.backoffMs !== undefined ? { backoffMs: this.opts.backoffMs } : {}),
-          idempotent: !opts.write,
-          what: "The PADI logbook",
-        },
-      );
+      let res: Response;
+      try {
+        res = await padiFetch(
+          mode === "direct" ? this.opts.endpoints.directUrl : this.opts.endpoints.logbookUrl,
+          { method: "POST", headers, body: JSON.stringify({ query: doc.query, variables: doc.variables }) },
+          {
+            ...(this.opts.fetch ? { fetch: this.opts.fetch } : {}),
+            ...(this.opts.timeoutMs ? { timeoutMs: this.opts.timeoutMs } : {}),
+            ...(this.opts.backoffMs !== undefined ? { backoffMs: this.opts.backoffMs } : {}),
+            idempotent: !opts.write,
+            what: "The PADI logbook",
+          },
+        );
+      } catch (error) {
+        // A write that left this server may have been saved: never say "try again" for it.
+        if (opts.write && error instanceof PadiHttpError && error.sent) throw new UnconfirmedWriteError(undefined, { cause: error });
+        throw error;
+      }
 
       if (res.status === 401) {
         await readText(res);
@@ -213,10 +224,12 @@ export class GraphqlClient {
           proxyRetried = true;
           continue;
         }
+        if (!safeToResend && res.status !== 501) throw unconfirmed(res);
         throw statusError("The PADI logbook", res, text);
       }
 
       const text = await readText(res);
+      if (opts.write && res.status >= 500 && res.status !== 501) throw unconfirmed(res);
       const json = parseJson(text) as { data?: unknown; errors?: GraphqlErrorEntry[] } | undefined;
       const errors = Array.isArray(json?.errors) ? json.errors : undefined;
 
@@ -244,6 +257,11 @@ export class GraphqlClient {
       return { data: json.data as T, mode };
     }
   }
+}
+
+/** The error of a write that PADI answered with HTTP 5xx (it may have been saved). */
+function unconfirmed(res: Response): UnconfirmedWriteError {
+  return new UnconfirmedWriteError(undefined, { cause: statusError("The PADI logbook", res) });
 }
 
 /** affected_rows of a mutation field, or undefined when it is missing. */

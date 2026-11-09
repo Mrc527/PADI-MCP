@@ -8,19 +8,24 @@
  */
 
 import { z } from "zod";
-import { NotFoundError, ReadOnlyError, UserFacingError } from "../util/errors.js";
+import { NotFoundError, ReadOnlyError, UnconfirmedWriteError, UserFacingError } from "../util/errors.js";
 import { parseDateOnly, todayInZone } from "../util/dates.js";
 import {
   ADVENTURE_DIVES,
   ADVENTURE_ELECTIVE_NUMBERS,
   allowedSkills,
   canonicalEquipment,
+  canonicalSkill,
   describeEnum,
   enumKey,
+  FLEXIBLE_SKILLS,
   GAS_PRESETS,
   isEnumValue,
+  LATER_SKILLS,
   parseAdventureDive,
   parseEnum,
+  REACTIVATE_REQUIREMENTS,
+  RESCUE_EXERCISES,
   SKILL_COURSES,
   TRAINING_DIVES,
   trainingDive,
@@ -31,6 +36,7 @@ import {
   applyPatch,
   buildInsert,
   buildUpdate,
+  diveWebUrl,
   emptyState,
   isLocked,
   stateFromWire,
@@ -64,7 +70,7 @@ export interface LogbookServiceOptions {
   readOnly: boolean;
   /** Units of answers and of unit-bearing inputs when a call names none. "auto": the PADI setting. */
   units: UnitChoice;
-  /** IANA time zone for "today" (dates in the future are refused). */
+  /** IANA time zone of the server's "today" (for the 100-year check and for display). */
   timeZone: string;
   /** The clock, for tests. */
   now?: () => Date;
@@ -89,6 +95,7 @@ export interface ListDivesArgs {
   to?: string;
   /** Text in the title, location or buddies. */
   query?: string;
+  units?: UnitChoice;
 }
 
 export interface ListDivesResult {
@@ -167,8 +174,11 @@ export interface DeleteDiveArgs {
 
 export interface DeleteDiveResult {
   deleted: true;
-  /** The deleted dive, so it can be created again. */
+  /** The deleted dive, so it can be created again (as a new dive with a new id). */
   dive: Dive;
+  /** False when PADI's photo service could not be asked whether the dive had photos. */
+  photos_checked?: false;
+  note?: string;
 }
 
 export interface SubmitForVerificationArgs {
@@ -211,8 +221,12 @@ export interface GetPhotosResult {
   dive_id: number;
   total: number;
   photos: DivePhoto[];
-  /** Photos left out (too large, or over `max`). */
+  /** Photos left out (too large, over `max`, not readable, or of a type AI apps do not show). */
   skipped?: number;
+  /** Photos left out because AI apps cannot show their image type (see them at web_url). */
+  skipped_unsupported?: Array<{ id: string; mimeType: string }>;
+  /** Where the dive and its photos can be seen on learning.padi.com. */
+  web_url?: string;
 }
 
 export interface ExportArgs {
@@ -220,11 +234,20 @@ export interface ExportArgs {
   from?: string;
   to?: string;
   units?: UnitChoice;
+  /** Dives in this part, 1-500 (default 50 for json, 100 for csv). */
+  limit?: number;
+  offset?: number;
 }
 
 export interface ExportResult {
   format: "csv" | "json";
+  /** Dives in the date range. */
+  total: number;
+  /** Dives in this part. */
   count: number;
+  offset: number;
+  /** The offset of the next part, when there is one. */
+  next_offset?: number;
   units: DiveUnits;
   content: string;
 }
@@ -243,6 +266,18 @@ export const MAX_PHOTO_BYTES = 1_500_000;
 export const MAX_PHOTOS_TOTAL_BYTES = 4_000_000;
 /** PADI's own limit for depth, time and other numbers. */
 const PADI_MAX_NUMBER = 999_999;
+/** Default and largest number of dives in one export answer (AI apps cap the size of a tool answer). */
+export const EXPORT_DEFAULT_LIMIT = { json: 50, csv: 100 } as const;
+export const EXPORT_MAX_LIMIT = 500;
+/** Image types AI apps accept in a tool answer. */
+export const SHOWABLE_IMAGE_TYPES: readonly string[] = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+/** How long deleteDive waits for PADI's photo list before it goes on without it. */
+const PHOTO_CHECK_MS = 10_000;
+/**
+ * The latest calendar date anywhere on Earth is "today" in UTC+14 (Etc/GMT-14 is UTC+14 in the
+ * IANA naming). Dates after it are in the future for every user, whatever their time zone.
+ */
+const EARLIEST_ZONE = "Etc/GMT-14";
 
 // ---------------------------------------------------------------------------------------------
 // Input shapes (zod v4), shared with the tools
@@ -285,6 +320,9 @@ function enumPatch<K extends EnumKind>(kind: K, what: string) {
     .nullable();
 }
 
+const WRITABLE_STATUS_TEXT = "Publish (a logged dive, the default) or Draft (incomplete: depth and time may be missing)";
+const TRAINING_SHAPE_TEXT = "Only for training dives (saved as Draft; then use logbook_submit_for_verification)";
+
 /** Status of a new or changed dive: Publish or Draft (lenient spelling). */
 const writableStatus = z
   .string()
@@ -295,7 +333,7 @@ const writableStatus = z
     ctx.addIssue({ code: "custom", message: `Use Publish (logged) or Draft. To send a dive to a PADI Pro, use logbook_submit_for_verification.` });
     return z.NEVER;
   })
-  .describe("Publish (a logged dive, the default) or Draft (incomplete: depth and time may be missing)");
+  .describe(WRITABLE_STATUS_TEXT);
 
 const num = (min: number, max: number) => z.number().min(min).max(max);
 const text = (max: number) => z.string().max(max);
@@ -350,6 +388,7 @@ export const listDivesShape = {
   from: dateOnly.optional().describe("Only dives on or after this date (YYYY-MM-DD)"),
   to: dateOnly.optional().describe("Only dives on or before this date (YYYY-MM-DD)"),
   query: z.string().trim().min(1).max(200).optional().describe("Only dives with this text in the title, location or buddies"),
+  units: unitChoice.optional(),
 };
 
 export const getDiveShape = { dive_id: diveId, units: unitChoice.optional() };
@@ -370,6 +409,14 @@ export const exportShape = {
   format: z.enum(["csv", "json"]).describe("csv (a table, one row per dive) or json (a list of full dives)"),
   from: dateOnly.optional().describe("Only dives on or after this date (YYYY-MM-DD)"),
   to: dateOnly.optional().describe("Only dives on or before this date (YYYY-MM-DD)"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(EXPORT_MAX_LIMIT)
+    .optional()
+    .describe(`Dives in this part, 1-${EXPORT_MAX_LIMIT} (default ${EXPORT_DEFAULT_LIMIT.json} for json, ${EXPORT_DEFAULT_LIMIT.csv} for csv). Large logbooks come in parts`),
+  offset: z.number().int().min(0).optional().describe("Dives to skip, oldest first (use next_offset of the previous part)"),
   units: unitChoice.optional(),
 };
 
@@ -392,6 +439,15 @@ export const deleteDiveShape = {
   confirm_title: z.string().min(1).max(500).describe("The dive's title, exactly as in the logbook (case does not matter), to confirm the delete. For a dive without a title: its id"),
 };
 
+const quoted = (items: readonly string[]) => items.map((k) => `"${k}"`).join(", ");
+
+/** The skills of each course, as the PADI web form offers them. */
+export const SKILLS_TEXT =
+  `Open (flexible skills): ${quoted(FLEXIBLE_SKILLS)}, and for dives 2-4 also ${quoted(LATER_SKILLS)} ("no skills" when none was done). ` +
+  `Rescue (exercises): ${quoted(RESCUE_EXERCISES)}. ` +
+  `Reactivate (requirements): ${quoted(REACTIVATE_REQUIREMENTS)} ("panicked diver" is PADI's value of the "buoyancy / weight check" item). ` +
+  "Specialty: one free-text entry (the specialty). Advanced and DSD dives store no skills. Open, Rescue and Reactivate dives need at least one before verification";
+
 const trainingShape = z
   .strictObject({
     course: enumInput("course", "course").pipe(z.custom<TrainingCourse>((v) => v !== undefined, "Give a course")).describe(`Course: ${describeEnum("course")}`),
@@ -403,49 +459,49 @@ const trainingShape = z
       .nullable()
       .optional()
       .describe("Training dive number: Open 1-4, Advanced 5 (Deep), 6 (Navigation), 7-9 (electives), Rescue 10-11, DSD 12, Reactivate 13. Leave out for Specialty"),
-    adventure_dive: z.string().trim().min(1).max(80).optional().describe(`Advanced elective dives 7-9 only: ${ADVENTURE_DIVES.join(", ")}`),
-    skills: skillList.optional().describe("Skills done. Open, Rescue and Reactivate: from PADI's list (for example \"no skills\", \"cramp removal\", \"swim compass\"). Specialty: one free-text entry (the specialty)"),
+    adventure_dive: z.string().trim().min(1).max(80).nullable().optional().describe(`Advanced elective dives 7-9 only: ${ADVENTURE_DIVES.join(", ")}`),
+    skills: skillList.nullable().optional().describe(`Skills done, PADI's values for the course. ${SKILLS_TEXT}`),
   })
-  .describe("Only for training dives (saved as Draft; then use logbook_submit_for_verification)");
+  .describe(TRAINING_SHAPE_TEXT);
 
 export const createDiveShape = {
   title: z.string().trim().min(1).max(200).describe(D.title),
   date: dateOnly.describe(D.date),
   location: z.string().trim().min(1).max(200).describe(D.location),
   dive_type: enumInput("dive_type", "dive type").pipe(z.custom<EnumValue<"dive_type">>((v) => v !== undefined, "Give a dive type")).describe(D.dive_type),
-  status: writableStatus.optional(),
-  max_depth: num(0, PADI_MAX_NUMBER).optional().describe(D.max_depth),
-  bottom_time_min: z.number().int().min(0).max(PADI_MAX_NUMBER).optional().describe(D.bottom_time_min),
-  time_in: timeOfDay.optional().describe(D.time_in),
-  time_out: timeOfDay.optional().describe(D.time_out),
-  water_type: enumInput("water_type", "water type").optional().describe(D.water_type),
-  body_of_water: enumInput("body_of_water", "body of water").optional().describe(D.body_of_water),
-  weather: enumInput("weather", "weather").optional().describe(D.weather),
-  air_temp: num(-100, 200).optional().describe(D.air_temp),
-  surface_water_temp: num(-100, 200).optional().describe(D.surface_water_temp),
-  bottom_water_temp: num(-100, 200).optional().describe(D.bottom_water_temp),
-  visibility: enumInput("visibility", "visibility").optional().describe(D.visibility),
-  visibility_distance: num(0, PADI_MAX_NUMBER).optional().describe(D.visibility_distance),
-  waves: enumInput("waves", "waves").optional().describe(D.waves),
-  current: enumInput("current", "current").optional().describe(D.current),
-  surge: enumInput("surge", "surge").optional().describe(D.surge),
-  suit: enumInput("suit", "suit").optional().describe(D.suit),
-  weight: num(0, PADI_MAX_NUMBER).optional().describe(D.weight),
-  weight_type: enumInput("weight_type", "weighting").optional().describe(D.weight_type),
-  equipment: equipmentList.optional().describe(D.equipment),
-  cylinder_type: enumInput("cylinder_type", "cylinder type").optional().describe(D.cylinder_type),
-  cylinder_size: num(0, PADI_MAX_NUMBER).optional().describe(D.cylinder_size),
-  gas: enumInput("gas", "gas").optional().describe(D.gas),
-  oxygen_pct: z.number().int().min(0).max(100).optional().describe(D.oxygen_pct),
-  nitrogen_pct: z.number().int().min(0).max(100).optional().describe(D.nitrogen_pct),
-  helium_pct: z.number().int().min(0).max(100).optional().describe(D.helium_pct),
-  start_pressure: num(0, PADI_MAX_NUMBER).optional().describe(D.start_pressure),
-  end_pressure: num(0, PADI_MAX_NUMBER).optional().describe(D.end_pressure),
-  feeling: enumInput("feeling", "feeling").optional().describe(D.feeling),
-  notes: text(10_000).optional().describe(D.notes),
-  buddies: text(500).optional().describe(D.buddies),
-  dive_center: text(200).optional().describe(D.dive_center),
-  training: trainingShape.optional(),
+  status: writableStatus.nullable().optional().describe(WRITABLE_STATUS_TEXT),
+  max_depth: num(0, PADI_MAX_NUMBER).nullable().optional().describe(D.max_depth),
+  bottom_time_min: z.number().int().min(0).max(PADI_MAX_NUMBER).nullable().optional().describe(D.bottom_time_min),
+  time_in: timeOfDay.nullable().optional().describe(D.time_in),
+  time_out: timeOfDay.nullable().optional().describe(D.time_out),
+  water_type: enumInput("water_type", "water type").nullable().optional().describe(D.water_type),
+  body_of_water: enumInput("body_of_water", "body of water").nullable().optional().describe(D.body_of_water),
+  weather: enumInput("weather", "weather").nullable().optional().describe(D.weather),
+  air_temp: num(-100, 200).nullable().optional().describe(D.air_temp),
+  surface_water_temp: num(-100, 200).nullable().optional().describe(D.surface_water_temp),
+  bottom_water_temp: num(-100, 200).nullable().optional().describe(D.bottom_water_temp),
+  visibility: enumInput("visibility", "visibility").nullable().optional().describe(D.visibility),
+  visibility_distance: num(0, PADI_MAX_NUMBER).nullable().optional().describe(D.visibility_distance),
+  waves: enumInput("waves", "waves").nullable().optional().describe(D.waves),
+  current: enumInput("current", "current").nullable().optional().describe(D.current),
+  surge: enumInput("surge", "surge").nullable().optional().describe(D.surge),
+  suit: enumInput("suit", "suit").nullable().optional().describe(D.suit),
+  weight: num(0, PADI_MAX_NUMBER).nullable().optional().describe(D.weight),
+  weight_type: enumInput("weight_type", "weighting").nullable().optional().describe(D.weight_type),
+  equipment: equipmentList.nullable().optional().describe(D.equipment),
+  cylinder_type: enumInput("cylinder_type", "cylinder type").nullable().optional().describe(D.cylinder_type),
+  cylinder_size: num(0, PADI_MAX_NUMBER).nullable().optional().describe(D.cylinder_size),
+  gas: enumInput("gas", "gas").nullable().optional().describe(D.gas),
+  oxygen_pct: z.number().int().min(0).max(100).nullable().optional().describe(D.oxygen_pct),
+  nitrogen_pct: z.number().int().min(0).max(100).nullable().optional().describe(D.nitrogen_pct),
+  helium_pct: z.number().int().min(0).max(100).nullable().optional().describe(D.helium_pct),
+  start_pressure: num(0, PADI_MAX_NUMBER).nullable().optional().describe(D.start_pressure),
+  end_pressure: num(0, PADI_MAX_NUMBER).nullable().optional().describe(D.end_pressure),
+  feeling: enumInput("feeling", "feeling").nullable().optional().describe(D.feeling),
+  notes: text(10_000).nullable().optional().describe(D.notes),
+  buddies: text(500).nullable().optional().describe(D.buddies),
+  dive_center: text(200).nullable().optional().describe(D.dive_center),
+  training: trainingShape.nullable().optional().describe(TRAINING_SHAPE_TEXT),
   units: unitChoice.optional(),
 };
 
@@ -490,7 +546,7 @@ export const updateDiveShape = {
   buddies: text(500).nullable().optional().describe(D.buddies + CLEAR),
   dive_center: text(200).nullable().optional().describe(D.dive_center + CLEAR),
   adventure_dive: z.string().trim().min(1).max(80).nullable().optional().describe(`Adventure dive (Advanced elective dives 7-9): ${ADVENTURE_DIVES.join(", ")}` + CLEAR),
-  skills: skillList.nullable().optional().describe("Training dives only: the skills done (replaces the list)" + CLEAR),
+  skills: skillList.nullable().optional().describe(`Training dives only: the skills done (replaces the list)${CLEAR}. ${SKILLS_TEXT}`),
   units: unitChoice.optional(),
 };
 
@@ -562,6 +618,29 @@ export function csvCell(value: unknown): string {
   return /[",\r\n]|^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/** A copy without the keys whose value is null (on create, null means "not given"). */
+function withoutNulls<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== null)) as T;
+}
+
+/** True when a change gives a unit-bearing number (its units must then be known). */
+function hasUnitNumbers(patch: DivePatch): boolean {
+  return UNIT_FIELDS.some(([field]) => typeof patch[field] === "number");
+}
+
+/**
+ * A write whose answer did not come back may have been saved: replace the generic message with
+ * one that names the dive and says how to check before sending it again.
+ */
+async function explainUnconfirmed<T>(write: Promise<T>, message: string): Promise<T> {
+  try {
+    return await write;
+  } catch (error) {
+    if (error instanceof UnconfirmedWriteError) throw new UnconfirmedWriteError(message, { cause: error });
+    throw error;
+  }
+}
+
 function describeLocked(dive: { id: number; status: string | null | undefined }, action: string): string {
   const status = dive.status ?? "";
   const why = status === "Pending" ? "it is waiting for verification by a PADI Pro" : `it is ${status}`;
@@ -605,22 +684,39 @@ export class LogbookService {
     return run;
   }
 
+  /**
+   * The PADI units setting, cached for UNITS_CACHE_MS. When PADI cannot be asked, the last known
+   * value is used even when it is older (not for `fresh`, which must ask PADI).
+   */
   private async padiUnits(fresh = false): Promise<Units> {
     const at = this.now().getTime();
-    if (!fresh && this.unitsCache && at - this.unitsCache.at < UNITS_CACHE_MS) return this.unitsCache.value;
-    const value = await this.backend.getUnits();
-    this.unitsCache = { value, at };
-    return value;
+    const cached = this.unitsCache;
+    if (!fresh && cached && at - cached.at < UNITS_CACHE_MS) return cached.value;
+    try {
+      const value = await this.backend.getUnits();
+      this.unitsCache = { value, at };
+      return value;
+    } catch (error) {
+      if (!fresh && cached) return cached.value;
+      throw error;
+    }
   }
 
-  /** The unit system of a call: its own choice, else the account setting ("auto": PADI's). */
-  async resolveUnits(choice?: UnitChoice): Promise<UnitSystem> {
+  /**
+   * The unit system of a call: its own choice, else the account setting ("auto": PADI's). When
+   * the PADI setting cannot be read, answers are in metric (what PADI stores; every answer names
+   * its units). Numbers given in a call (`forInput`) are never guessed: the call must then name
+   * its units, or a 60 meant as ft could be saved as 60 m.
+   */
+  async resolveUnits(choice?: UnitChoice, opts: { forInput?: boolean } = {}): Promise<UnitSystem> {
     const c = choice ?? this.opts.units;
     if (c === "metric" || c === "imperial") return c;
     try {
       return (await this.padiUnits()) === "Imperial" ? "imperial" : "metric";
-    } catch {
-      // The setting is display only: without it, answer in metric (what PADI stores).
+    } catch (error) {
+      if (opts.forInput) {
+        throw new UserFacingError('Could not read your PADI units setting, so the numbers of this call could be metric or imperial. Nothing was saved. Repeat the call with units "metric" or "imperial".', { cause: error });
+      }
       return "metric";
     }
   }
@@ -704,18 +800,27 @@ export class LogbookService {
     }
   }
 
-  /** The rules of the PADI web form, on a merged state. Throws one error listing every problem. */
-  private validate(s: DiveState, opts: { checkDate: boolean; system: UnitSystem }): void {
+  /**
+   * The rules of the PADI web form, on a merged state. Throws one error listing every problem.
+   * `checkSkills`: also refuse skills the PADI form does not offer for the course (on create, and
+   * when a change sets the skills; dives PADI already holds can be changed and sent as they are).
+   */
+  private validate(s: DiveState, opts: { checkDate: boolean; checkSkills: boolean; system: UnitSystem }): void {
     const problems: string[] = [];
     if (!s.title.trim()) problems.push("A title is needed.");
     if (!s.location.trim()) problems.push("A location is needed.");
     if (!s.dive_type) problems.push(`A dive type is needed: ${describeEnum("dive_type")}.`);
+    if (!opts.checkDate && !/^\d{4}-\d{2}-\d{2}$/.test(s.date)) {
+      // A dive saved by another app without a usable date: PADI needs one on every write.
+      problems.push("This dive has no date. Give date (YYYY-MM-DD).");
+    }
     if (opts.checkDate) {
       try {
         parseDateOnly(s.date);
-        const today = this.today();
-        if (s.date > today) problems.push(`The date ${s.date} is in the future (today is ${today}).`);
-        else if (s.date < yearsBefore(today, 100)) problems.push(`The date ${s.date} is more than 100 years ago.`);
+        // The user's own date can be ahead of the server's: a date is only "in the future" when it
+        // is after today everywhere on Earth.
+        if (s.date > todayInZone(EARLIEST_ZONE, this.now())) problems.push(`The date ${s.date} is in the future.`);
+        else if (s.date < yearsBefore(this.today(), 100)) problems.push(`The date ${s.date} is more than 100 years ago.`);
       } catch (error) {
         problems.push((error as Error).message);
       }
@@ -762,9 +867,11 @@ export class LogbookService {
           if (skills.length) problems.push(`${course} dives do not store skills.`);
         } else {
           const allowed = allowedSkills(course, s.log_number);
-          const unknown = skills.filter((k) => !allowed.includes(k));
-          if (unknown.length) problems.push(`Unknown skill${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `"${u}"`).join(", ")}. For this dive use: ${allowed.join(", ")}.`);
-          if (!skills.length && s.status !== "Draft") problems.push(`Pick at least one skill (or "no skills"): ${allowed.join(", ")}.`);
+          const unknown = opts.checkSkills ? skills.filter((k) => !allowed.includes(k)) : [];
+          if (unknown.length) problems.push(`Unknown skill${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `"${u}"`).join(", ")}. For this ${course} dive use: ${allowed.join(", ")}.`);
+          if (!skills.length && s.status !== "Draft") {
+            problems.push(`Pick at least one skill${course === "Open" ? ' (or "no skills")' : ""}: ${allowed.join(", ")}.`);
+          }
         }
       }
       if (s.status !== "Draft" && !s.instructor_number) problems.push("Training dives need the instructor's PADI number (use logbook_submit_for_verification).");
@@ -778,8 +885,7 @@ export class LogbookService {
   private normaliseSkills(skills: string[] | null | undefined, course: string | null, logNumber: number | null): string[] | null | undefined {
     if (!skills) return skills;
     if (course === "SpecialtyAndDistinctive" || !isEnumValue("course", course)) return skills.map((k) => k.trim()).filter(Boolean);
-    const allowed = allowedSkills(course, logNumber);
-    return [...new Set(skills.map((k) => allowed.find((a) => enumKey(a) === enumKey(k)) ?? k.trim()))];
+    return [...new Set(skills.map((k) => canonicalSkill(course, logNumber, k) ?? k.trim()))];
   }
 
   // -------------------------------------------------------------------------------------------
@@ -788,39 +894,45 @@ export class LogbookService {
 
   async listDives(args: ListDivesArgs): Promise<ListDivesResult> {
     checkRange(args.from, args.to);
-    const system = await this.resolveUnits();
+    const system = await this.resolveUnits(args.units);
     const limit = args.limit ?? 15;
     const offset = args.offset ?? 0;
-    const local = !!(args.from || args.to || args.query || (args.log_type && args.status));
+    const sort = args.sort ?? "date";
+    // Depth and time are sorted here: PADI's descending order puts dives without a value first,
+    // and has no tie-breaker for paging.
+    const byValue = sort === "max_depth" || sort === "bottom_time";
+    const local = byValue || !!(args.from || args.to || args.query || (args.log_type && args.status));
     let total: number;
     let dives: DiveSummary[];
     if (local) {
       const all = await this.backend.listLogs({
         limit: null,
-        orderBy: args.sort ?? "date",
+        orderBy: "date",
         withDepthTime: true,
         ...(args.query ? { full: true } : {}),
         ...(args.log_type ? { logType: args.log_type } : args.status ? { status: args.status } : {}),
       });
       const q = args.query ? enumKeyText(args.query) : "";
-      const matching = all.filter((w) => {
-        if (args.log_type && w.log_type !== args.log_type) return false;
-        if (args.status && w.status !== args.status) return false;
+      const matching: DiveSummary[] = [];
+      for (const w of all) {
+        if (args.log_type && w.log_type !== args.log_type) continue;
+        if (args.status && w.status !== args.status) continue;
         const summary = toDiveSummary(w, system);
-        if (!inRange(summary.date, args.from, args.to)) return false;
+        if (!inRange(summary.date, args.from, args.to)) continue;
         if (q) {
           const hay = enumKeyText([w.dive_title, w.dive_location, w.experiences?.[0]?.buddies].filter(Boolean).join(" "));
-          if (!hay.includes(q)) return false;
+          if (!hay.includes(q)) continue;
         }
-        return true;
-      });
+        matching.push(summary);
+      }
+      if (byValue) matching.sort(byValueDesc(sort === "max_depth" ? "max_depth" : "bottom_time_min"));
       total = matching.length;
-      dives = matching.slice(offset, offset + limit).map((w) => toDiveSummary(w, system));
+      dives = matching.slice(offset, offset + limit);
     } else {
       const filter = args.log_type ? { logType: args.log_type } : args.status ? { status: args.status } : {};
       const [count, rows] = await Promise.all([
         this.backend.countLogs(filter),
-        this.backend.listLogs({ limit, offset, orderBy: args.sort ?? "date", withDepthTime: true, ...filter }),
+        this.backend.listLogs({ limit, offset, orderBy: "date", withDepthTime: true, ...filter }),
       ]);
       total = count;
       dives = rows.map((w) => toDiveSummary(w, system));
@@ -877,41 +989,71 @@ export class LogbookService {
 
   async getPhotos(args: GetPhotosArgs): Promise<GetPhotosResult> {
     const max = Math.min(Math.max(args.max ?? 3, 1), 5);
-    await this.existing(args.dive_id);
+    const existing = await this.existing(args.dive_id);
     const ids = await this.backend.listPhotoIds(args.dive_id);
     const photos: DivePhoto[] = [];
+    const unsupported: Array<{ id: string; mimeType: string }> = [];
     let skipped = Math.max(0, ids.length - max);
     let total = 0;
     let firstError: unknown;
     for (const id of ids.slice(0, max)) {
       try {
         const photo = await this.backend.getPhoto(args.dive_id, id);
+        const mimeType = photo.mimeType.split(";")[0]!.trim().toLowerCase();
+        // AI apps refuse a whole answer with an image of another type (HEIC, TIFF, not an image).
+        if (!SHOWABLE_IMAGE_TYPES.includes(mimeType)) {
+          unsupported.push({ id, mimeType: photo.mimeType });
+          skipped++;
+          continue;
+        }
         if (photo.data.length > MAX_PHOTO_BYTES || total + photo.data.length > MAX_PHOTOS_TOTAL_BYTES) {
           skipped++;
           continue;
         }
         total += photo.data.length;
-        photos.push({ id, mimeType: photo.mimeType, data: photo.data });
+        photos.push({ id, mimeType, data: photo.data });
       } catch (error) {
         firstError ??= error;
         skipped++;
       }
     }
-    if (!photos.length && firstError) throw firstError;
-    return { dive_id: args.dive_id, total: ids.length, photos, ...(skipped ? { skipped } : {}) };
+    if (!photos.length && !unsupported.length && firstError) throw firstError;
+    return {
+      dive_id: args.dive_id,
+      total: ids.length,
+      photos,
+      ...(skipped ? { skipped } : {}),
+      ...(unsupported.length ? { skipped_unsupported: unsupported } : {}),
+      ...(skipped ? { web_url: diveWebUrl(existing.id, existing.log_type) } : {}),
+    };
   }
 
   async exportDives(args: ExportArgs): Promise<ExportResult> {
     checkRange(args.from, args.to);
     const system = await this.resolveUnits(args.units);
+    // One query for every dive (as designed); the answer comes in parts that fit AI apps.
     const all = await this.backend.listLogs({ limit: null, orderBy: "date", full: true });
     const dives = all
       .map((w) => toDive(w, system))
       .filter((d) => inRange(d.date, args.from, args.to))
       .sort((a, b) => (a.date === b.date ? a.id - b.id : a.date < b.date ? -1 : 1));
+    const limit = Math.min(Math.max(args.limit ?? EXPORT_DEFAULT_LIMIT[args.format], 1), EXPORT_MAX_LIMIT);
+    const offset = Math.max(args.offset ?? 0, 0);
+    const part = dives.slice(offset, offset + limit);
     const units = unitLabels(system);
-    const content = args.format === "json" ? JSON.stringify(dives, null, 2) : toCsv(dives, units);
-    return { format: args.format, count: dives.length, units, content };
+    // JSON: one compact dive per line, without the units of each dive (they are in the summary).
+    const content =
+      args.format === "json"
+        ? `[${part
+            .map(({ units: _units, ...d }) => {
+              void _units;
+              return `\n${JSON.stringify(d)}`;
+            })
+            .join(",")}${part.length ? "\n" : ""}]`
+        : toCsv(part, units);
+    const result: ExportResult = { format: args.format, total: dives.length, count: part.length, offset, units, content };
+    if (offset + part.length < dives.length) result.next_offset = offset + part.length;
+    return result;
   }
 
   async account(): Promise<PadiAccount> {
@@ -926,12 +1068,48 @@ export class LogbookService {
   // Writing
   // -------------------------------------------------------------------------------------------
 
+  /**
+   * The dive as PADI has it after a write. The write is done by then, so a failed read never
+   * throws (the caller could send the write again and, for a new dive, log it twice): the answer
+   * is then built from what was sent, with a note.
+   */
+  private async readBack(id: number, fallback: () => WireLog, system: UnitSystem): Promise<Dive> {
+    let wire: WireLog | undefined;
+    let failed = false;
+    try {
+      wire = await this.backend.getLog(id);
+    } catch {
+      failed = true;
+    }
+    const dive = toDive(wire ?? fallback(), system);
+    if (failed) dive.note = `Saved, but PADI did not return the saved dive, so this is what was sent. Check it with logbook_get_dive (dive_id ${id}); do not send the change again.`;
+    return dive;
+  }
+
+  /** How many photos PADI has for a dive, or undefined when the photo service does not answer. */
+  private async photoCount(id: number): Promise<number | undefined> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), PHOTO_CHECK_MS);
+      timer.unref?.();
+    });
+    try {
+      const ids = await Promise.race([this.backend.listPhotoIds(id), timeout]);
+      return ids?.length;
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async createDive(args: CreateDiveArgs): Promise<Dive> {
     this.assertWritable("logbook_create_dive");
     return this.serial(async () => {
-      const system = await this.resolveUnits(args.units);
-      const { units: _units, training, status, ...fields } = args;
-      void _units;
+      // On create, null means "not given" (some AI apps send null for every field they leave out).
+      const { units, training: rawTraining, status, ...fields } = withoutNulls(args) as CreateDiveArgs;
+      const training = rawTraining ? (withoutNulls(rawTraining) as NonNullable<CreateDiveArgs["training"]>) : undefined;
+      const system = await this.resolveUnits(units, { forInput: hasUnitNumbers(fields as DivePatch) });
       let s = applyPatch(emptyState(), this.metricPatch(fields as DivePatch, system));
       s.status = status ?? "Publish";
       if (training) {
@@ -952,27 +1130,29 @@ export class LogbookService {
           skills: this.normaliseSkills(training.skills, course, logNumber) ?? null,
         };
       }
-      this.validate(s, { checkDate: true, system });
+      this.validate(s, { checkDate: true, checkSkills: true, system });
       if (training && s.log_number !== null && s.course !== "Reactivate") {
         const all = await this.backend.listLogs({ limit: null, logType: "Training" });
         const same = all.find((w) => w.log_course === s.course && Number(w.log_number) === s.log_number);
         if (same) throw new UserFacingError(`"${s.title}" is already in your logbook (dive ${same.id}). Change that dive instead.`);
       }
       const payload = buildInsert(s, this.now());
-      const id = await this.backend.insertLog(payload);
-      const created = await this.backend.getLog(id);
-      return toDive(created ?? wireFromInsert(id, payload), system);
+      const id = await explainUnconfirmed(
+        this.backend.insertLog(payload),
+        `PADI did not confirm that the dive "${s.title}" on ${s.date} was saved, so it may have been saved anyway. ` +
+          `Check with logbook_list_dives (from ${s.date}, to ${s.date}) before you try again, so the dive is not logged twice.`,
+      );
+      return this.readBack(id, () => wireFromInsert(id, payload), system);
     });
   }
 
   async updateDive(args: UpdateDiveArgs): Promise<Dive> {
     this.assertWritable("logbook_update_dive");
     return this.serial(async () => {
-      const system = await this.resolveUnits(args.units);
-      const { dive_id: id, units: _units, ...raw } = args;
-      void _units;
+      const { dive_id: id, units, ...raw } = args;
       const patch = Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== undefined)) as DivePatch;
       if (!Object.keys(patch).length) throw new UserFacingError("Nothing to change: give at least one field.");
+      const system = await this.resolveUnits(units, { forInput: hasUnitNumbers(patch) });
       const existing = await this.existing(id);
       if (isLocked(existing.status)) throw new UserFacingError(describeLocked(existing, "changed"));
       const before = stateFromWire(existing);
@@ -983,32 +1163,63 @@ export class LogbookService {
       }
       if (before.log_type !== "Training" && metric.skills?.length) throw new UserFacingError("Skills are only for training dives.");
       const s = applyPatch(before, metric);
-      this.validate(s, { checkDate: patch.date !== undefined, system });
-      const update = buildUpdate(existing, s, this.now(), {
+      this.validate(s, { checkDate: patch.date !== undefined, checkSkills: patch.skills !== undefined, system });
+      const now = this.now();
+      const update = buildUpdate(existing, s, now, {
         withTimes: patch.time_in !== undefined || patch.time_out !== undefined,
         withSkills: patch.skills !== undefined,
       });
-      await this.backend.updateLog(update);
-      const after = await this.backend.getLog(id);
-      return toDive(after ?? existing, system);
+      await explainUnconfirmed(
+        this.backend.updateLog(update),
+        `PADI did not confirm the change of dive ${id}, so it may have been saved anyway. Check it with logbook_get_dive; sending the same change again is safe.`,
+      );
+      return this.readBack(
+        id,
+        () => {
+          try {
+            return { ...wireFromInsert(id, buildInsert(s, now)), log_type: existing.log_type };
+          } catch {
+            return existing;
+          }
+        },
+        system,
+      );
     });
   }
 
   async deleteDive(args: DeleteDiveArgs): Promise<DeleteDiveResult> {
     this.assertWritable("logbook_delete_dive");
     return this.serial(async () => {
+      const id = args.dive_id;
       const system = await this.resolveUnits();
-      const existing = await this.existing(args.dive_id);
+      const existing = await this.existing(id);
       if (isLocked(existing.status)) throw new UserFacingError(describeLocked(existing, "deleted"));
       // A dive without a title is confirmed with its id.
-      const title = (existing.dive_title ?? "").trim() || String(args.dive_id);
+      const title = (existing.dive_title ?? "").trim() || String(id);
       const confirm = args.confirm_title.trim();
       if (confirm.toLowerCase() !== title.toLowerCase()) {
-        throw new UserFacingError(`confirm_title does not match. To delete dive ${args.dive_id}, give its title exactly: "${title}".`);
+        // The stored title is not shown: it must come from the user, not from this error.
+        throw new UserFacingError(
+          `Dive ${id} is not titled "${confirm}". Nothing was deleted. Check which dive the user means (logbook_get_dive, or logbook_list_dives with query) and ask the user before you try again.`,
+        );
       }
       const dive = toDive(existing, system);
-      await this.backend.deleteLog(args.dive_id);
-      return { deleted: true, dive };
+      // The PADI web app deletes a dive's photos first. This server cannot delete photos, and
+      // photos of a deleted dive cannot be seen or deleted any more: such a dive is deleted there.
+      const photos = await this.photoCount(id);
+      if (photos) {
+        throw new UserFacingError(
+          `Dive ${id} has ${photos} photo${photos === 1 ? "" : "s"}. This server cannot delete photos, and they would stay on PADI without a dive. Nothing was deleted. ` +
+            `Delete the dive on learning.padi.com instead (${dive.web_url}), which deletes its photos too.`,
+        );
+      }
+      await explainUnconfirmed(this.backend.deleteLog(id), `PADI did not confirm that dive ${id} was deleted. Check with logbook_get_dive before you try again.`);
+      const result: DeleteDiveResult = { deleted: true, dive };
+      if (photos === undefined) {
+        result.photos_checked = false;
+        result.note = "PADI's photo service did not answer, so it is not known whether the dive had photos. Photos are not part of the returned dive and cannot be restored.";
+      }
+      return result;
     });
   }
 
@@ -1026,11 +1237,13 @@ export class LogbookService {
       const pro = matches[0];
       if (!pro) throw new UserFacingError(`No PADI Pro with member number ${number} was found. Check the number with your instructor.`);
       const s: DiveState = { ...stateFromWire(existing), status: "Pending", instructor_number: number };
-      this.validate(s, { checkDate: false, system });
-      await this.backend.updateLog(buildUpdate(existing, s, this.now()));
-      const after = await this.backend.getLog(args.dive_id);
+      this.validate(s, { checkDate: false, checkSkills: false, system });
+      await explainUnconfirmed(
+        this.backend.updateLog(buildUpdate(existing, s, this.now())),
+        `PADI did not confirm that dive ${args.dive_id} was sent to the PADI Pro. Check it with logbook_get_dive (status Pending means it was sent) before you try again.`,
+      );
       return {
-        dive: toDive(after ?? { ...existing, status: "Pending", memsys_member_number: Number(number) }, system),
+        dive: await this.readBack(args.dive_id, () => ({ ...existing, status: "Pending", memsys_member_number: Number(number) }), system),
         instructor: { member_number: number, found: true, ...(pro.name ? { name: pro.name } : {}) },
       };
     });
@@ -1040,7 +1253,7 @@ export class LogbookService {
     this.assertWritable("logbook_set_units");
     return this.serial(async () => {
       const padi: Units = units === "imperial" ? "Imperial" : "Metric";
-      await this.backend.setUnits(padi);
+      await explainUnconfirmed(this.backend.setUnits(padi), "PADI did not confirm the new units setting. Sending it again is safe.");
       this.unitsCache = { value: padi, at: this.now().getTime() };
       const effective: UnitSystem = this.opts.units === "auto" ? units : this.opts.units;
       return { padi_setting: padi, effective };
@@ -1055,6 +1268,23 @@ export class LogbookService {
 /** Text for "contains" matching: lowercase, accents and separators kept simple. */
 function enumKeyText(value: string): string {
   return value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Order of sort=max_depth / bottom_time: the largest value first, dives without a value last,
+ * then the newest date and the highest id (a stable order for paging).
+ */
+function byValueDesc(key: "max_depth" | "bottom_time_min"): (a: DiveSummary, b: DiveSummary) => number {
+  return (a, b) => {
+    const x = a[key];
+    const y = b[key];
+    if (x === undefined || y === undefined) {
+      if (x !== y) return x === undefined ? 1 : -1;
+    } else if (x !== y) {
+      return y - x;
+    }
+    return (a.date > b.date ? -1 : a.date < b.date ? 1 : 0) || b.id - a.id;
+  };
 }
 
 function ref(d: DiveSummary): DiveRef {

@@ -16,19 +16,28 @@ import { ConfigError } from "../util/errors.js";
 import { closeServices, createServices, type Services } from "../server.js";
 import type { PadiAccountSettings, ServerSettings, Store, User } from "./store.js";
 
+const API_MODES = ["proxy", "direct", "auto"] as const;
+
 /**
  * Operator-level settings that apply to every user: the PADI endpoints (useful for tests against
- * a local mock) and the API transport.
+ * a local mock) and the API transport. PADI_API_MODE is checked here, at startup, and lowercased:
+ * a typo would otherwise only show up later, as an error in every user's tool calls, and the
+ * account page compares the exact value.
  */
 export function operatorOverrides(env: Record<string, string | undefined>): Record<string, string> {
   const out = endpointEnv(env);
-  if (env.PADI_API_MODE) out.PADI_API_MODE = env.PADI_API_MODE;
+  const mode = (env.PADI_API_MODE ?? "").trim().toLowerCase();
+  if (mode) {
+    if (!API_MODES.some((m) => m === mode)) throw new ConfigError(`PADI_API_MODE must be one of ${API_MODES.join(", ")} (got "${mode}")`);
+    out.PADI_API_MODE = mode;
+  }
   return out;
 }
 
 /**
  * Build the AppConfig for one user from their stored PADI connection. Throws ConfigError for
- * invalid settings. The client id the tokens were issued for wins over the operator's.
+ * invalid settings. The client id the tokens were issued for wins over the operator's. The
+ * user's own time zone wins over the server's default (it decides what "today" is).
  */
 export function buildUserConfig(s: PadiAccountSettings, server: ServerSettings, operator: Record<string, string> = {}): AppConfig {
   const env: Record<string, string | undefined> = {
@@ -39,7 +48,7 @@ export function buildUserConfig(s: PadiAccountSettings, server: ServerSettings, 
     PADI_CLIENT_ID: s.clientId,
     PADI_UNITS: s.units,
     PADI_READ_ONLY: String(s.readOnly || server.forceReadOnly),
-    PADI_TIMEZONE: server.defaultTimeZone,
+    PADI_TIMEZONE: s.timeZone || server.defaultTimeZone,
   };
   return loadConfig(env);
 }

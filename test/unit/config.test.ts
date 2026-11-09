@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -119,6 +119,32 @@ describe("token cache (PADI_TOKEN_CACHE)", () => {
     expect(readTokenCache(file, "diver.test@example.com")).toEqual(tokens);
     expect(readTokenCache(file)).toEqual(tokens);
     expect(logs).toEqual([]);
+  });
+
+  it("never writes through a file or symlink placed at a temporary path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "padi-mcp-tokens-"));
+    const file = join(dir, "token.json");
+    // The old predictable temporary name: a world-readable file, then a symlink to a file of someone else.
+    const planted = `${file}.${process.pid}.tmp`;
+    writeFileSync(planted, "");
+    chmodSync(planted, 0o666);
+    fileTokenSink(file, undefined, () => {}).save(tokens);
+    expect(lstatSync(file).isFile()).toBe(true);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readFileSync(planted, "utf8")).toBe("");
+
+    const dir2 = mkdtempSync(join(tmpdir(), "padi-mcp-tokens-"));
+    const file2 = join(dir2, "token.json");
+    const target = join(dir2, "someone-elses-file");
+    writeFileSync(target, "");
+    symlinkSync(target, `${file2}.${process.pid}.tmp`);
+    fileTokenSink(file2, undefined, () => {}).save(tokens);
+    expect(lstatSync(file2).isFile()).toBe(true);
+    expect(lstatSync(file2).isSymbolicLink()).toBe(false);
+    expect(statSync(file2).mode & 0o777).toBe(0o600);
+    expect(readFileSync(target, "utf8")).toBe("");
+    // No temporary file of ours is left behind.
+    expect(readdirSync(dir2).filter((n) => n.endsWith(".tmp") && n !== `token.json.${process.pid}.tmp`)).toEqual([]);
   });
 
   it("ignores a cache of another account, and broken or missing files", () => {

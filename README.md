@@ -56,8 +56,8 @@ What the AI can do:
 
 In web mode the server is a small website plus an MCP endpoint:
 
-- People **create an account** on the website. On the account page they **connect their PADI account**: they type the e-mail and password they use on PADI and click **Save and test**. The server signs in to PADI right away and saves the connection only if that works. The password is used once and never stored: the server keeps only an encrypted PADI refresh token. They also choose the units (the PADI logbook setting, metric or imperial) and can turn on read-only mode.
-- Once connected, the account page shows the PADI name, the affiliate id, the number of dives and the last sign-in. Units and read-only can be changed there without signing in again. **Reconnect** signs in to PADI again (needed after a PADI password change), and **Remove** deletes the stored sign-in. If PADI ends the sign-in, the page and the AI app both say so, and the user signs in again with **Reconnect**.
+- People **create an account** on the website. On the account page they **connect their PADI account**: they type the e-mail and password they use on PADI and click **Save and test**. The server signs in to PADI right away and saves the connection only if that works. The password is used once and never stored: the server keeps only an encrypted PADI refresh token. They also choose the units (the PADI logbook setting, metric or imperial) and their time zone (it decides what "today" is), and can turn on read-only mode.
+- Once connected, the account page shows the PADI name, the affiliate id, the number of dives and the last sign-in. Units, time zone and read-only can be changed there without signing in again. **Reconnect** signs in to PADI again (needed after a PADI password change), and **Remove** deletes the stored sign-in. If PADI ends the sign-in, the page and the AI app both say so, and the user signs in again with **Reconnect**.
 - They add **one URL** (`https://your-server/mcp`) to their AI app (in Claude a **custom connector**). The app opens a sign-in window, they sign in to your server and click **Allow**. From then on the app works with *their* PADI logbook.
 - An **admin page** controls who can sign up (request access with approval, invite codes, open, closed), read-only mode for everyone, which AI apps may connect, token lifetimes, users and connected apps.
 
@@ -86,7 +86,14 @@ PUBLIC_URL=https://padi-mcp.example.com TRUST_PROXY=1 DATA_DIR=/var/lib/padi-mcp
 
 Put it behind an HTTPS reverse proxy (see [deploy/nginx.conf.example](deploy/nginx.conf.example)): forward everything to port 3000, keep the `Host` header, allow at least 300 seconds read timeout and do not strip the `WWW-Authenticate` header. If you use Cloudflare, do not enable "Block AI bots" or "Bot Fight Mode" for this host: Claude's requests (User-Agent `Claude-User`, from `160.79.104.0/21` and `153.61.208.0/20`) would be blocked.
 
-The server needs outbound HTTPS to PADI's hosts (see [How sign-in to PADI works](#how-sign-in-to-padi-works-and-what-is-stored)). It needs no other outbound access, except an SMTP server if you want e-mails about access requests.
+The server needs outbound HTTPS to:
+
+- PADI's hosts (see [How sign-in to PADI works](#how-sign-in-to-padi-works-and-what-is-stored)).
+- The hosts of the AI apps' client metadata documents. When an app connects with a `client_id` URL, the server fetches that document, for example from `claude.ai` or `chatgpt.com`. If the fetch fails, built-in copies of Claude's and ChatGPT's documents are used; other apps that sign in this way cannot connect without it.
+- Its own `PUBLIC_URL`, for **Check public setup** on the admin page.
+- Your SMTP server, only if you want e-mails about access requests.
+
+It needs no other outbound access.
 
 If no administrator is configured (both `ADMIN_EMAIL` and `ADMIN_PASSWORD`), the first person who signs up becomes the administrator. After that, the server works by approval: other people can **request access** (with an optional message), and an administrator approves or rejects each request on the admin page. You can switch to invite codes only, open sign-up or closed sign-up there.
 
@@ -293,7 +300,7 @@ Users can see and revoke connected apps, and a log of recent tool calls, under *
 `/admin` is available to administrators:
 
 - **Overview** with the MCP address, user counts (also how many users have connected PADI), and a **Check public setup** button that fetches the discovery documents from the public URL the way Claude does.
-- **Settings**: who can create an account (request access with approval, which is the default; invite only; anyone; nobody), allowed sign-up email domains, read-only for everyone, which AI apps may connect (for example only `claude.ai claude.com`), dynamic client registration and client metadata documents, token and session lifetimes, default time zone.
+- **Settings**: who can create an account (request access with approval, which is the default; invite only; anyone; nobody), allowed sign-up email domains, read-only for everyone, which AI apps may connect (for example only `claude.ai claude.com`), dynamic client registration and client metadata documents, token and session lifetimes, default time zone (for users who did not choose their own on the account page).
 - **Access requests**: approve or reject people who asked for an account, one by one or all at once. The menu shows how many are waiting. If the operator set `SMTP_URL`, each administrator also gets an e-mail about new requests at their sign-in address. Requests that come close together arrive in one e-mail (the first about a minute after a request, then at most one every 10 minutes). Without `SMTP_URL`, no e-mail is sent and the admin page still lists the requests. Email addresses are not verified, so anyone can type any address: before you approve, check with the person in another way that the request is theirs. People are not notified automatically, so let them know when you approve them. Unanswered requests are deleted after 30 days, at most 100 can wait at the same time, and one IP address can send 5 requests a day.
 - **Invites**: create single-use invite codes with an expiry. In approval mode a valid code skips the approval.
 - **Demo account for app reviewers**: create a [demo account](#demo-account) with sample dives (the password is shown once), see the demo accounts and reset their data.
@@ -325,9 +332,9 @@ Environment variables for `--web`:
 | `MASTER_KEY` | generated | 32-byte key (64 hex or 44 base64 characters) that encrypts the stored PADI refresh tokens. If unset, one is created in `DATA_DIR/master.key`. `MASTER_KEY_FILE` reads it from a file. Losing it means every user has to sign in to PADI again on the account page. |
 | `TRUST_PROXY` | (off) | Set to `1` behind one reverse proxy so client IPs (rate limits) are read from `X-Forwarded-For`. |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | | Create this administrator account on first start (`ADMIN_PASSWORD_FILE` also works). |
-| `SMTP_URL` | (none) | Optional SMTP server for e-mails to administrators about access requests, for example `smtps://user:password@mail.example.com:465` (`SMTP_URL_FILE` also works). Without it, no e-mail is sent. The server checks it at startup and does not start if it is not an `smtp://` or `smtps://` address with a host name. |
-| `NOTIFY_FROM` | see text | Sender address of those e-mails: an address, or a name and an address (`MCP for PADI <noreply@example.com>`). Default: the SMTP user name when it is an e-mail address, otherwise the administrator's own address. The server does not start if it is not an e-mail address. |
-| `PADI_API_MODE` | `proxy` | Which PADI logbook endpoint every user's connection uses: `proxy`, `direct` or `auto`. See [How sign-in to PADI works](#how-sign-in-to-padi-works-and-what-is-stored). |
+| `SMTP_URL` | (none) | Optional SMTP server for e-mails to administrators about access requests, for example `smtps://user:password@mail.example.com:465` (`SMTP_URL_FILE` also works). Without it, no e-mail is sent. The server checks it at startup and does not start if it is not an `smtp://` or `smtps://` address with a host name. The connection must be encrypted: `smtps://` uses TLS from the start, and with `smtp://` the server must offer STARTTLS, otherwise nothing is sent, not even the password. For a mail server on the same machine without TLS, add `?requireTLS=false` to the URL. |
+| `NOTIFY_FROM` | see text | Sender address of those e-mails: an address, or a name and an address (`MCP for PADI <noreply@example.com>`). Default: the SMTP user name when it is an e-mail address. If that user name is not an e-mail address, `NOTIFY_FROM` is required: the server does not start without it. Use an address your SMTP server may send from. The server does not start if `NOTIFY_FROM` is not an e-mail address. |
+| `PADI_API_MODE` | `proxy` | Which PADI logbook endpoint every user's connection uses: `proxy`, `direct` or `auto`. See [How sign-in to PADI works](#how-sign-in-to-padi-works-and-what-is-stored). With the Docker Compose files in `deploy/`, set it in `.env`. |
 | `PADI_COGNITO_URL`, `PADI_AUTH_URL`, `PADI_LOGBOOK_URL`, `PADI_DIRECT_URL`, `PADI_INSTRUCTOR_URL`, `PADI_DIRECT_INSTRUCTOR_URL`, `PADI_ECARD_URL`, `PADI_IMAGES_URL`, `PADI_CLIENT_ID`, `PADI_COGNITO_REGION` | PADI | Operator-only overrides that apply to every user, for tests against a local mock PADI API. Users can never change server addresses. |
 
 Everything else is configured on the admin page.
@@ -337,7 +344,7 @@ Everything else is configured on the admin page.
 The server is its own OAuth 2.1 authorization server, built to the MCP authorization specification and Claude's connector requirements:
 
 - Discovery: unauthenticated MCP requests get `401` with `WWW-Authenticate: Bearer ... resource_metadata="..."`; protected resource metadata is served at `/.well-known/oauth-protected-resource` (and `/mcp`), authorization server metadata at `/.well-known/oauth-authorization-server`.
-- Clients identify themselves with a **Client ID Metadata Document** (Claude's published identity) or **dynamic client registration**. Documents are fetched with SSRF protection, and built-in copies of Claude's documents are used if claude.ai cannot be reached.
+- Clients identify themselves with a **Client ID Metadata Document** (Claude's published identity) or **dynamic client registration**. Documents are fetched with SSRF protection, and built-in copies of Claude's and ChatGPT's documents are used if claude.ai or chatgpt.com cannot be reached.
 - Authorization code flow with **PKCE (S256)**, a consent page that judges an app by where it returns to, never by the name it gives itself (well-known AI apps such as Claude and ChatGPT are shown as recognized by their exact redirect address; answers to localhost, an app's own scheme or VS Code stay on the user's device; any other address gets a warning, and Allow only works after the user ticks a box to confirm they trust it), single-use codes, tokens bound to the MCP URL (RFC 8707), **rotating refresh tokens** with reuse detection, revocation. The consent page says what the app can do with the logbook: read dives and, unless the account is read-only, add, change and delete dives and send dives to a PADI Pro.
 - Tokens, sessions and invite codes are stored only as SHA-256 hashes; PADI refresh tokens are encrypted with AES-256-GCM.
 - Rate limits are applied per OAuth client and per user (Claude's requests for all users come from the same few IP ranges).
@@ -362,7 +369,7 @@ After a wrong e-mail or password the server never tries again by itself, so your
 - `direct`: `divelog.global-prod.padi.com/v1/graphql`, the endpoint the current PADI web app uses.
 - `auto`: start with `proxy`; if it keeps failing (not found or server errors twice in a row, or "not signed in" right after a fresh sign-in), switch to `direct` until the server restarts.
 
-Other PADI hosts: `ecard.global-prod.padi.com` (eCards), `logbook-images-api.padi.com` (dive photos), and the instructor lookup on the logbook host (`dive-log-service.global-prod.padi.com` in `direct` mode). The server talks to no other hosts. Writes are sent one after the other per user, failed requests are retried at most 3 times with a pause (on 429 and 5xx answers), and every request times out after 20 seconds.
+Other PADI hosts: `ecard.global-prod.padi.com` (eCards), `logbook-images-api.padi.com` (dive photos), and the instructor lookup on the logbook host (`dive-log-service.global-prod.padi.com` in `direct` mode). The PADI client talks to no other hosts. Writes are sent one after the other per user, failed requests are retried at most 3 times with a pause (on 429 and 5xx answers), and every request times out after 20 seconds.
 
 **What is stored.**
 
@@ -370,7 +377,7 @@ Other PADI hosts: `ecard.global-prod.padi.com` (eCards), `logbook-images-api.pad
 | --- | --- | --- |
 | PADI password | Never. Used once to sign in, then forgotten. | Only where you put it (environment variable or file). |
 | PADI refresh token | Encrypted with AES-256-GCM (key in `MASTER_KEY` or `DATA_DIR/master.key`), tied to your account. A renewed refresh token replaces the old one. | In memory, or in the file `PADI_TOKEN_CACHE` (mode 0600) if you set it. |
-| Other PADI details | Your PADI e-mail, name, affiliate id, login method, units and read-only setting, and when you connected (all encrypted with the token). | Nothing. |
+| Other PADI details | Your PADI e-mail, name, affiliate id, login method, units, read-only setting and time zone, and when you connected (all encrypted with the token). | Nothing. |
 | Dives, notes, photos, eCards | Never stored. They pass between PADI and your AI app while a request runs. | Never stored. |
 | Activity | A log of tool calls (time, app, tool, duration, success; no content), kept 90 days. | Nothing. |
 
@@ -505,7 +512,7 @@ All settings are environment variables. You need `PADI_EMAIL` with `PADI_PASSWOR
 | `PADI_TOKEN_CACHE` | (none) | File where the current refresh token is kept between runs (mode 0600). Unset: memory only. The cache wins over `PADI_REFRESH_TOKEN`, unless it was written for another e-mail. |
 | `PADI_UNITS` | `auto` | Units of answers and inputs: `auto` (your PADI logbook setting), `metric` or `imperial`. PADI always stores metric values. |
 | `PADI_READ_ONLY` | `false` | `true` removes every tool that adds, changes or deletes anything. |
-| `PADI_TIMEZONE` | system zone | IANA time zone for "today" (a dive date may not be in the future), for example `Europe/Zurich`. |
+| `PADI_TIMEZONE` | system zone | IANA time zone of the server's "today", for example `Europe/Zurich`. `padi_account_info` and the **Year in review** prompt use it, and a dive date may be at most 100 years before it. It does not decide what is "in the future": a dive date is only refused when it is after today everywhere on Earth, so a dive of today is never refused. |
 | `PADI_LOGIN_METHOD` | `auto` | `auto`, `cognito` or `padi`. See [How sign-in to PADI works](#how-sign-in-to-padi-works-and-what-is-stored). |
 | `PADI_API_MODE` | `proxy` | `proxy`, `direct` or `auto`: which PADI logbook endpoint to use. |
 | `PADI_COGNITO_URL`, `PADI_AUTH_URL`, `PADI_LOGBOOK_URL`, `PADI_DIRECT_URL`, `PADI_INSTRUCTOR_URL`, `PADI_DIRECT_INSTRUCTOR_URL`, `PADI_ECARD_URL`, `PADI_IMAGES_URL`, `PADI_CLIENT_ID`, `PADI_COGNITO_REGION` | PADI | Other PADI hosts and client, for tests against a local mock only. |
@@ -515,7 +522,7 @@ All settings are environment variables. You need `PADI_EMAIL` with `PADI_PASSWOR
 | `MCP_HTTP_ALLOWED_HOSTS` | | Extra accepted `Host` header values (DNS rebinding protection). |
 | `MCP_HTTP_ALLOWED_ORIGINS` | | Browser origins allowed to call the server (CORS). |
 
-See [.env.example](.env.example) for a template.
+See [.env.example](.env.example) for a template. The server does not read a `.env` file by itself: set the values in your MCP client configuration (the `env` block) or in your shell. To keep them in a file, start the server with Node's `--env-file` option, for example `node --env-file=.env dist/index.js --check`. In an MCP client configuration, put `"--env-file=/absolute/path/to/.env"` before the path to `dist/index.js` in `args`.
 
 ## Tools
 
@@ -524,19 +531,19 @@ The AI sees these tools (write tools are hidden in read-only mode). Every tool h
 | Tool | Kind | What it does |
 | --- | --- | --- |
 | `padi_account_info` | read | Name, e-mail, PADI affiliate id, units, read-only, API mode, demo flag, server version and today's date. `check=true` also tests the connection and counts the dives. |
-| `logbook_list_dives` | read | Dives, newest first: `limit` 1-100 (15), `offset`, `log_type`, `status`, `sort` (date, max_depth, bottom_time), `from`, `to`, `query` (text in title, location or buddies). Returns the total and the next offset. |
+| `logbook_list_dives` | read | Dives, newest first: `limit` 1-100 (15), `offset`, `log_type`, `status`, `sort` (date, max_depth, bottom_time), `from`, `to`, `query` (text in title, location or buddies), `units`. Sorted by depth or time, the largest come first and dives without a value last. Returns the total and the next offset. |
 | `logbook_get_dive` | read | Every detail of one dive, in the units you want, plus a link to edit it on learning.padi.com. |
 | `logbook_stats` | read | Number of dives, total bottom time, deepest, longest, average depth and time, first and last dive; `from`, `to`, `group_by` (none, year, month, location, dive_type, log_type). |
 | `logbook_search_dive_sites` | read | Search PADI's dive site list (`query`, `limit` 1-50). A free-text location is also allowed when logging. |
-| `logbook_export_dives` | read | All dives (or `from`/`to`) as CSV or JSON. |
+| `logbook_export_dives` | read | All dives (or `from`/`to`) as CSV or JSON, oldest first, in parts: `limit` (default 50 for JSON, 100 for CSV, at most 500) and `offset`. Returns the total and the next offset. |
 | `logbook_lookup_instructor` | read | The name of a PADI Pro, by member number. |
 | `padi_list_certifications` | read | Your eCards: title, date, PADI number, instructor, dive center, card image link. |
-| `logbook_get_photos` | read | Up to 5 photos of a dive, as images (size-capped). |
+| `logbook_get_photos` | read | Up to 5 photos of a dive, as images (size-capped). Only JPEG, PNG, GIF and WebP can be shown: other photos (for example HEIC) are counted as skipped, with a link to the dive on learning.padi.com. |
 | `logbook_create_dive` | write | Log a dive: title, date (not in the future), location, dive type, depth and bottom time (not needed for a Draft), and optional conditions, equipment, gas, feeling, notes, buddies and dive center. Training dives (`training: {course, log_number, ...}`) are saved as Draft. Returns the saved dive. |
 | `logbook_update_dive` | write | Change any field of a dive; `null` clears a field. Refuses locked dives. Returns the updated dive. |
 | `logbook_set_units` | write | Set the units of the PADI logbook (metric or imperial). No dive changes: PADI stores metric values. |
 | `logbook_submit_for_verification` | write, reaches another person | Look up the PADI Pro, then send the dive to them for verification (it becomes Pending and locked). Needs `confirm: true`. A real PADI Pro gets a real request. |
-| `logbook_delete_dive` | destructive | Delete a dive for good (PADI has no trash). `confirm_title` must be the dive's title. Refuses locked dives. Returns the deleted dive, so it can be logged again. |
+| `logbook_delete_dive` | destructive | Delete a dive for good (PADI has no trash). `confirm_title` must be the dive's title. Refuses locked dives, and dives with photos (delete those on learning.padi.com, which also deletes the photos). Returns the deleted dive, so it can be logged again (as a new dive with a new id; photos are not part of it). |
 
 Prompts: **Log a dive** (`log_a_dive`, asks only for what is missing, then logs the dive; hidden in read-only mode) and **Year in review** (`year_in_review`, a summary of a year of diving).
 
@@ -578,9 +585,9 @@ Run `node dist/index.js --check` first (local mode), or **Save and test** on the
 | You sign in to PADI with Google, Apple or Facebook | Those sign-ins only work in a browser. Set a PADI password first: "Forgot password" on account.padi.com with the same e-mail, then use that password here. Your Google, Apple or Facebook sign-in keeps working. |
 | "Your PADI sign-in expired" | PADI ended the sign-in, for example after a password change, or the refresh token got too old. Web service: sign in to PADI again on the account page (**Reconnect**). Local mode: delete the `PADI_TOKEN_CACHE` file or the old `PADI_REFRESH_TOKEN` and start again with `PADI_PASSWORD`. |
 | PADI asks for a new password, a code or a confirmed e-mail | Sign in once at learning.padi.com in a browser and do what PADI asks, then try again. |
-| Errors after PADI changed its website or API (for example "not found", server errors, or "not signed in" right after a fresh sign-in) | Try `PADI_API_MODE=auto` or `PADI_API_MODE=direct` (operator setting for the web service). If both fail, PADI changed its private API: check for a newer version of this project, or open an issue. `PADI_LOGIN_METHOD=padi` can help when the Cognito sign-in stops working. |
+| Errors after PADI changed its website or API (for example "not found", server errors, or "not signed in" right after a fresh sign-in) | Try `PADI_API_MODE=auto` or `PADI_API_MODE=direct`. For the web service this is an operator setting for every user: with Docker Compose, put it in `.env` next to the compose file, then run `docker compose up -d`. If both fail, PADI changed its private API: check for a newer version of this project, or open an issue. In local mode, `PADI_LOGIN_METHOD=padi` can help when the Cognito sign-in stops working. The web service always signs in with `auto`, which already tries PADI's own sign-in API when Cognito fails for another reason than a wrong e-mail or password. |
 | A dive "is locked" and cannot be changed or deleted | The dive waits for a PADI Pro (Pending) or is verified. PADI does not let you change it, and neither does this server. |
-| "The date ... is in the future" for a dive of today | Set `PADI_TIMEZONE` (or the default time zone on the admin page) to your time zone. |
+| The AI app uses the wrong date for "today" or "yesterday" | Web service: choose your time zone on the account page. Local mode: set `PADI_TIMEZONE` to your time zone. A dive of today is never refused as "in the future", whatever the time zone. |
 | Depths or temperatures look wrong | Ask for the units you want, or set `PADI_UNITS` (or the units on the account page). PADI stores metric values; `auto` follows the PADI logbook setting. |
 | Claude cannot connect to the web service | Check `https://DOMAIN/healthz` from outside, the reverse proxy (keep the `Host` and `WWW-Authenticate` headers) and Cloudflare bot protection. **Check public setup** on the admin page shows what Claude sees. |
 

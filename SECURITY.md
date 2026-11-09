@@ -25,7 +25,7 @@ The same contact is published in machine-readable form at https://padi.mcp.visin
 - **The web service** (the hosted service at https://padi.mcp.visin.ch and any copy run from this code): sign-up, sign-in, the account and admin pages, sessions and CSRF protection, and how the PADI sign-in is handled: the PADI password is used once and never stored, and the PADI refresh token is stored encrypted.
 - **The OAuth server**: discovery documents, client registration and client metadata documents, the authorization and consent pages, and token issue, refresh and revocation.
 - **The MCP endpoint** (`/mcp`): access control (each person must only ever reach their own PADI logbook), the logbook tools and their safety checks (locked dives, delete confirmation, read-only mode), and how free text from the logbook (dive titles, notes, buddies, locations) is passed to the AI app.
-- **The PADI client**: that tokens, passwords and e-mail addresses never reach logs or tool results, that the PADI affiliate id always comes from the user's own token, and that users cannot point the server at other hosts.
+- **The PADI client**: that tokens and passwords never reach logs or tool results, that logs never contain e-mail addresses (tool results only show the signed-in user's own address, for example in `padi_account_info`), that the PADI affiliate id always comes from the user's own token, and that users cannot point the server at other hosts.
 - **Local mode**: the stdio server, the single-user HTTP mode and its bearer token, read-only mode, and the token cache file (`PADI_TOKEN_CACHE`).
 - The source code in this repository and the Docker image built from it (`ghcr.io/mrc527/padi-mcp`).
 

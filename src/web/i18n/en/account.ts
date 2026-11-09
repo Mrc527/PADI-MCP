@@ -37,6 +37,8 @@ export default {
   "account.padi.units.auto": "The same as my PADI logbook",
   "account.padi.units.metric": "Metric (m, °C, bar, kg)",
   "account.padi.units.imperial": "Imperial (ft, °F, psi, lb)",
+  "account.padi.timeZone": "Time zone",
+  "account.padi.timeZoneHint": "Your AI app uses it to know today's date, for example when you log today's dive.",
   "account.padi.readOnly": "Read-only",
   "account.padi.readOnlyHint": "AI apps can read your logbook but never add, change or delete dives.",
   "account.padi.readOnlyEnforced": "Enforced by the administrator.",
@@ -75,8 +77,20 @@ export default {
   "account.error.formExpired": "Your form expired. Please try again.",
   "account.error.missing": "Enter your PADI e-mail and password.",
   "account.error.email": "Enter a valid e-mail address.",
-  // {error} is the answer of PADI (in English).
+  "account.error.timeZone": "Unknown time zone.",
+  // {error} is one of the account.error.padi.* texts below.
   "account.error.signIn": "Could not sign in to PADI: {error}",
+  // Why PADI refused the sign-in.
+  "account.error.padi.badCredentials": "PADI did not accept the e-mail or password. Check them and try again: use the e-mail and password you use on padi.com. If you sign in to PADI with Google, Apple or Facebook, first set a PADI password with Forgot password on account.padi.com.",
+  "account.error.padi.locked": "PADI blocked the sign-in for now after too many failed attempts. Wait a while, then try again.",
+  "account.error.padi.disabled": "PADI says this account is disabled. Contact PADI.",
+  "account.error.padi.challenge": "PADI asks for an extra sign-in step, such as a new password or a code. This server cannot do that step. If PADI asks for a new password, set it at account.padi.com, then sign in here with it.",
+  "account.error.padi.notConfirmed": "This PADI account is not confirmed yet. Confirm it with the e-mail from PADI, then try again.",
+  "account.error.padi.passwordReset": "PADI asks you to reset your password. Reset it at account.padi.com, then sign in here with the new password.",
+  "account.error.padi.network": "PADI could not be reached. Try again later.",
+  "account.error.padi.expired": "PADI ended the sign-in. Try again.",
+  // {detail} is the technical reason, in English.
+  "account.error.padi.unknown": "PADI did not accept the sign-in. Try again later. Details: {detail}",
 
   // Connected apps
   "account.apps.title": "Connected apps",

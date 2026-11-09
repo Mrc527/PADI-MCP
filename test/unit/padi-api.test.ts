@@ -263,6 +263,12 @@ describe("PadiApi REST endpoints", () => {
     expect(requests[1]!.url).toBe(`${ENDPOINTS.imagesUrl}/GetImage/42/a1`);
     expect(requests[1]!.headers["affiliate-id"]).toBeUndefined();
     expect(sniffImageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe("image/jpeg");
+    // The bytes win over a loose header ("image/jpg"); an unknown image keeps its header.
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]);
+    const loose = api(() => new Response(jpeg, { status: 200, headers: { "content-type": "image/jpg" } }));
+    expect((await loose.api.getPhoto(42, "j")).mimeType).toBe("image/jpeg");
+    const tiff = api(() => new Response(Buffer.from([0x49, 0x49, 0x2a, 0]), { status: 200, headers: { "content-type": "image/tiff" } }));
+    expect((await tiff.api.getPhoto(42, "t")).mimeType).toBe("image/tiff");
     expect(photoIdsFrom({ images: ["x"] })).toEqual(["x"]);
   });
 

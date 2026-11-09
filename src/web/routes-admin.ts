@@ -107,6 +107,10 @@ export function adminRoutes(ctx: WebContext): Router {
     // Access requests are listed on their own, not with the users.
     const users = ctx.store.listUsers().filter((u) => !u.pending);
     const demoUsers = users.filter((u) => u.demo);
+    // Connections on record that cannot be decrypted (the master key changed): they cannot be
+    // used until the user signs in to PADI again.
+    const unreadable = ctx.store.unreadablePadiUserIds();
+    const padiWorks = (u: (typeof users)[number]) => u.hasPadi && !u.padiNeedsReconnect && !u.demo && !unreadable.has(u.id);
     const requests = ctx.store.listAccessRequests();
     const activity = ctx.store.activityCounts(Date.now() - 7 * 86_400_000);
     const invites = ctx.store.listInvites();
@@ -132,7 +136,7 @@ export function adminRoutes(ctx: WebContext): Router {
           <div><dt>${t("admin.overview.mcpUrl")}</dt><dd><code>${ctx.mcpUrl.href}</code></dd></div>
           <div><dt>${t("admin.overview.publicUrl")}</dt><dd>${ctx.publicUrl.href}</dd></div>
           <div><dt>${t("admin.overview.version")}</dt><dd>${ctx.version}</dd></div>
-          <div><dt>${t("admin.overview.users")}</dt><dd>${t("admin.overview.userCount", { n: users.length, padi: users.filter((u) => u.hasPadi && !u.padiNeedsReconnect && !u.demo).length })}</dd></div>
+          <div><dt>${t("admin.overview.users")}</dt><dd>${t("admin.overview.userCount", { n: users.length, padi: users.filter(padiWorks).length })}</dd></div>
           <div><dt>${t("admin.overview.requests")}</dt><dd>${requests.length ? html`<a href="#requests">${tn("admin.overview.requestsWaiting", requests.length)}</a>` : t("admin.overview.noRequests")}</dd></div>
           <div><dt>${t("admin.overview.activeConnections")}</dt><dd>${ctx.pool.size}</dd></div>
           <div><dt>${t("admin.overview.platform")}</dt><dd>${ctx.platform}</dd></div>
@@ -281,7 +285,7 @@ export function adminRoutes(ctx: WebContext): Router {
               <td>${u.isAdmin ? html`<span class="badge ok">${t("admin.users.admin")}</span> ` : ""}${u.demo ? html`<span class="badge warn">${t("admin.users.demo")}</span> ` : ""}${u.disabled ? html`<span class="badge bad">${t("admin.users.disabled")}</span>` : ""}</td>
               <td>${u.demo
                 ? html`<span class="badge">${t("admin.users.padiDemo")}</span>`
-                : u.padiNeedsReconnect
+                : u.padiNeedsReconnect || unreadable.has(u.id)
                   ? html`<span class="badge bad">${t("admin.users.padiReconnect")}</span>`
                   : u.hasPadi
                     ? html`<span class="badge ok">${t("admin.users.padiConnected")}</span>`

@@ -240,6 +240,21 @@ describe("domain to wire", () => {
     expect([s.gas, s.oxygen_pct, s.nitrogen_pct, s.helium_pct]).toEqual([null, null, null, null]);
   });
 
+  it("a new custom gas does not keep the percentages of the old gas", () => {
+    const air = { ...stateFromWire(wireDive()), gas: "Air", oxygen_pct: 21, nitrogen_pct: 79, helium_pct: 0 };
+    const nitrox = applyPatch(air, { gas: "Enriched" });
+    expect([nitrox.gas, nitrox.oxygen_pct, nitrox.nitrogen_pct, nitrox.helium_pct]).toEqual(["Enriched", null, null, null]);
+    const trimix = applyPatch(air, { gas: "Trimix", oxygen_pct: 21, helium_pct: 35 });
+    expect([trimix.oxygen_pct, trimix.nitrogen_pct, trimix.helium_pct]).toEqual([21, null, 35]);
+    // The same custom gas again keeps its mix; a new oxygen value makes nitrogen "the rest" again.
+    const custom = { ...air, gas: "Enriched", oxygen_pct: 30, nitrogen_pct: 70, helium_pct: 0 };
+    expect(applyPatch(custom, { gas: "Enriched" })).toMatchObject({ oxygen_pct: 30, nitrogen_pct: 70, helium_pct: 0 });
+    expect(applyPatch(custom, { oxygen_pct: 32 })).toMatchObject({ oxygen_pct: 32, nitrogen_pct: null, helium_pct: 0 });
+    expect(applyPatch(custom, { oxygen_pct: 32, nitrogen_pct: 68 })).toMatchObject({ oxygen_pct: 32, nitrogen_pct: 68 });
+    // Presets are not touched by the oxygen rule (the service refuses a preset with other values).
+    expect(applyPatch(air, { oxygen_pct: 32 })).toMatchObject({ oxygen_pct: 32, nitrogen_pct: 79 });
+  });
+
   it("writes the instructor number as a number and keeps time_in only when asked", () => {
     const existing = wireDive({ depth_times: [{ max_depth: 10, bottom_time: 30, time_in: "09:00", time_out: null }] });
     const s = { ...stateFromWire(existing), instructor_number: "123456", status: "Pending" };

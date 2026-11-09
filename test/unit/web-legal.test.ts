@@ -296,7 +296,7 @@ describe("what the privacy policy states matches the code", () => {
     const { html } = await get("/privacy");
     expect(html).toContain("Your PADI password is used once to sign in and is never stored.");
     // The fields of PadiAccountSettings (store.ts), in words.
-    for (const words of ["PADI e-mail address", "sign-in token (a refresh token)", "PADI account id (the affiliate id)", "your name as PADI has it", "units and read-only mode", "the time you signed in"]) {
+    for (const words of ["PADI e-mail address", "sign-in token (a refresh token)", "PADI account id (the affiliate id)", "your name as PADI has it", "units, read-only mode and time zone", "the time you signed in"]) {
       expect(html).toContain(words);
     }
     expect(html).toContain("<strong>PADI.</strong> To reach your logbook");

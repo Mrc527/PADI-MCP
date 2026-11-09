@@ -11,7 +11,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Icon } from "@modelcontextprotocol/sdk/types.js";
 import { DEMO_NOTICE } from "../demo/index.js";
 import { DemoLogbookStore } from "../demo/logbook.js";
-import { createMcpServer, createServices } from "../server.js";
+import { PadiAuthError, type PadiAuthErrorCode } from "../padi/auth.js";
+import { createMcpServer, createServices, type Services } from "../server.js";
 import { redactForLog, UserFacingError } from "../util/errors.js";
 import { buildDemoConfig } from "./accounts.js";
 import { mcpIcons } from "./brand.js";
@@ -33,7 +34,7 @@ function setupServer(ctx: WebContext, user: User, problem?: string | "reconnect"
   const accountUrl = `${issuerOf(ctx.publicUrl)}/account`;
   const message =
     problem === "reconnect"
-      ? `Your PADI sign-in expired. Sign in again at ${accountUrl}.`
+      ? expiredMessage(ctx)
       : problem
         ? `The PADI connection saved for ${user.email} cannot be used: ${problem} Fix it at ${accountUrl}.`
         : `PADI is not connected yet for ${user.email}. Ask the user to open ${accountUrl}, sign in with their PADI e-mail and password, then try again.`;
@@ -49,6 +50,48 @@ function setupServer(ctx: WebContext, user: User, problem?: string | "reconnect"
     extraInstructions: message,
   });
   return mcp;
+}
+
+/** PADI client errors that mean "sign in to PADI again" (in web mode only "expired" happens). */
+const SIGN_IN_AGAIN: ReadonlySet<PadiAuthErrorCode> = new Set(["expired", "bad_credentials", "challenge", "not_confirmed", "password_reset"]);
+
+/** The answer of a tool call that found that the user's PADI sign-in stopped working. */
+function expiredMessage(ctx: WebContext): string {
+  return `Your PADI sign-in expired. Sign in again at ${issuerOf(ctx.publicUrl)}/account.`;
+}
+
+/**
+ * A connected user's services, with the errors that mean "sign in to PADI again" turned into a
+ * message with the address of the account page. The PADI client does not know that address: it
+ * says "Sign in to PADI again", and an AI app could then send the user to padi.com, which does
+ * not help. Later calls get the same message from the setup server (the user is then marked
+ * "needs reconnect"), but the call that finds the dead sign-in, and calls running at the same
+ * time, run here.
+ */
+function withAccountLink(services: Services, message: string): Services {
+  if (!services.logbook) return services;
+  const map = (error: unknown) =>
+    error instanceof PadiAuthError && SIGN_IN_AGAIN.has(error.code) ? new UserFacingError(message, { cause: error }) : error;
+  const logbook = new Proxy(services.logbook, {
+    get(target, prop, receiver) {
+      const value: unknown = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        let result: unknown;
+        try {
+          result = value.apply(target, args);
+        } catch (error) {
+          throw map(error);
+        }
+        return result instanceof Promise
+          ? result.catch((error: unknown) => {
+              throw map(error);
+            })
+          : result;
+      };
+    },
+  });
+  return { ...services, logbook };
 }
 
 function branding(ctx: WebContext): { icons: Icon[]; websiteUrl: string } {
@@ -113,7 +156,7 @@ export function mcpRoutes(ctx: WebContext): Router {
     try {
       const userCtx = user.padiNeedsReconnect && !user.demo ? undefined : ctx.pool.get(user);
       server = userCtx
-        ? createMcpServer(userCtx.config, userCtx.services, ctx.log, {
+        ? createMcpServer(userCtx.config, user.demo ? userCtx.services : withAccountLink(userCtx.services, expiredMessage(ctx)), ctx.log, {
             ...branding(ctx),
             onToolCall: (tool, ok, ms) => {
               try {
