@@ -27,7 +27,7 @@ export default {
   "account.padi.badgeConnected": "collegato",
   "account.padi.badgeNotConnected": "non collegato",
   "account.padi.badgeExpired": "accesso scaduto",
-  "account.padi.intro": "Accedi con l'indirizzo e-mail e la password che usi su padi.com. La tua password viene usata una sola volta per accedere e non viene mai memorizzata. Questo server conserva solo un token di accesso di PADI, in forma crittografata.",
+  "account.padi.intro": "Accedi con l'indirizzo e-mail e la password che usi su padi.com. La tua password viene usata una sola volta per accedere e non viene mai memorizzata. Questo server conserva invece un token di accesso di PADI, in forma crittografata.",
   "account.padi.social": "Accedi a PADI con Google, Apple o Facebook? Allora il tuo account PADI potrebbe non avere ancora una password. Impostane prima una: su <a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">account.padi.com</a> scegli <strong>Password dimenticata</strong> (Forgot password) e segui l'e-mail di PADI. Poi accedi qui con il tuo indirizzo e-mail e la nuova password.",
   "account.padi.unreadable": "Il collegamento con PADI salvato non è più leggibile perché la chiave di crittografia del server è cambiata. Accedi di nuovo a PADI.",
   "account.padi.expired": "Il tuo accesso a PADI è scaduto o è stato chiuso, ad esempio dopo un cambio di password. Le tue app di IA non possono raggiungere il tuo logbook finché non accedi di nuovo a PADI qui sotto.",
@@ -58,7 +58,7 @@ export default {
   "account.padi.reconnect": "Ricollega",
   "account.padi.reconnectHint": "Accedi di nuovo a PADI, ad esempio dopo aver cambiato la tua password PADI, oppure per collegare un altro account PADI.",
   "account.padi.remove": "Rimuovi il collegamento con PADI",
-  "account.padi.removeConfirm": "Vuoi rimuovere il collegamento con PADI? Le tue app di IA perderanno l'accesso al tuo logbook finché non accedi di nuovo. Il tuo logbook su PADI non viene modificato.",
+  "account.padi.removeConfirm": "Vuoi rimuovere il collegamento con PADI? Le tue app di IA perderanno l'accesso al tuo logbook finché non accedi di nuovo. Anche la copia della tua foto del profilo viene eliminata. Il tuo logbook su PADI non viene modificato.",
 
   // After "Save and test" (shown after the page reloads)
   "account.flash.connected": "Collegato a PADI. Ora le tue app di IA possono usare il tuo logbook.",
@@ -124,7 +124,7 @@ export default {
   "account.security.sessionsHeading": "Sessioni",
   "account.security.signOutOthers": "Esci da tutti gli altri browser",
   "account.security.deleteHeading": "Elimina account",
-  "account.security.deleteText": "Elimina il tuo account, il collegamento con PADI salvato e tutti i collegamenti con le app. Il tuo logbook su PADI resta intatto.",
+  "account.security.deleteText": "Elimina il tuo account, il collegamento con PADI salvato, la tua foto del profilo e tutti i collegamenti con le app. Il tuo logbook su PADI resta intatto.",
   "account.security.deleteConfirmLabel": "Digita la tua e-mail ({email}) per confermare",
   "account.security.deleteButton": "Elimina il mio account",
   "account.security.wrongPassword": "La password attuale non è corretta.",

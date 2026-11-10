@@ -79,6 +79,7 @@ function fakeBackend(opts: { failWith?: string; checkError?: string } = {}): Log
     listCertifications: fail("listCertifications"),
     listPhotoIds: fail("listPhotoIds"),
     getPhoto: fail("getPhoto"),
+    getProfilePhoto: fail("getProfilePhoto"),
     account: async () => {
       calls.push("account");
       if (opts.failWith) throw new Error(opts.failWith);

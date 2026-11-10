@@ -160,7 +160,7 @@ export default {
   "admin.users.resetPassword": "重设密码",
   "admin.users.confirmResetPassword": "要为此用户生成新的临时密码吗？",
   "admin.users.makeDemo": "设为演示账户",
-  "admin.users.confirmMakeDemo": "要将 {email} 转为演示账户吗？其 PADI 连接将被删除，从现在起，其已连接的应用将看到示例潜水日志。",
+  "admin.users.confirmMakeDemo": "要将 {email} 转为演示账户吗？其 PADI 连接和个人资料照片将被删除，从现在起，其已连接的应用将看到示例潜水日志。",
   "admin.users.makeNormal": "设为普通账户",
   "admin.users.confirmMakeNormal": "要将 {email} 转回普通账户吗？演示数据将被删除，该用户可以连接自己的 PADI 账户。",
   "admin.users.delete": "删除",

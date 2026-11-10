@@ -27,6 +27,7 @@ export default {
   "legal.privacy.data.request": "<strong>你的访问申请。</strong>如果你申请访问，我们会存储你写给管理员的留言，以便管理员做出决定。你的申请获批后，该留言即被删除。如果本服务设置了邮件服务器，并且管理员没有关闭电子邮件通知，你的电子邮件地址和这条留言还会通过电子邮件发送给管理员（参见“谁会收到你的数据”）。",
   "legal.privacy.data.invite": "<strong>邀请码。</strong>如果你使用邀请码注册，该邀请会记录你的电子邮件地址以及你使用它的时间。",
   "legal.privacy.data.padi": "<strong>你的 PADI 连接。</strong>你的 PADI 电子邮件地址、你在这里登录时 PADI 提供的登录令牌（一个刷新令牌）、你的 PADI 账户 ID（affiliate id）、PADI 记录的你的姓名，以及你的设置：单位、只读模式和时区，还有你的登录时间。这些信息使用 AES-256-GCM 加密存储。你的 PADI 密码只在登录时使用一次，绝不会被存储。我们需要这些信息来代表你访问你的 PADI 潜水日志。",
+  "legal.privacy.data.photo": "<strong>你的个人资料照片。</strong>如果你的 PADI 账户有一张已批准的证书照片（即你的 PADI 电子证书卡上的照片，PADI 网站会将其显示为你的头像），我们会保留一份副本，在这些页面上作为你的头像显示。我们只保留这一张照片。在你打开账户页面时，我们大约每天重新检查一次这张照片。",
   "legal.privacy.data.apps": "<strong>已连接的 AI 应用。</strong>当你连接一个 AI 应用时，我们会存储该应用的注册信息（它为自己提供的名称和网址），以及允许它代表你的账户执行操作的令牌。令牌仅以哈希值的形式存储。我们还会存储每个连接的建立时间和上次使用时间，以便你查看并撤销它。",
   "legal.privacy.data.activity": "<strong>活动日志。</strong>对于 AI 应用执行的每项操作（一次工具调用，例如 <code>logbook_list_dives</code>），我们会记录时间、应用、工具、耗时以及是否成功。我们不会记录读取或写入的内容：不记录潜水、潜点、潜伴、备注或潜水证书。你可以在“已连接的应用”页面查看最新的记录，我们则使用该日志来查找错误和滥用行为。",
   "legal.privacy.data.sessions": "<strong>浏览器会话。</strong>当你登录时，你的浏览器会在 Cookie 中获得一个随机会话代码。我们只存储它的哈希值，以及它的创建时间和过期时间。",
@@ -34,18 +35,18 @@ export default {
   "legal.privacy.data.log": "<strong>服务器日志。</strong>服务器会为登录失败、新建账户或出错等事件写入简短的技术日志。日志不包含密码、登录令牌、IP 地址，也不包含你的潜水日志的内容。但当某项操作失败时，错误信息可能包含一些简短的详细信息，例如被 PADI 拒绝的某个值。",
 
   "legal.privacy.content.title": "你的潜水日志不会被存储",
-  "legal.privacy.content.text": "当 AI 应用请求你的潜水记录时，{app} 会从 PADI 获取它们并传递给该应用。它们仅在请求处理期间保存在内存中，不会保存到数据库或磁盘上，潜水照片和潜水证书卡也是如此。服务器日志只包含上文所述的简短错误信息。你的 PADI 潜水日志的单位设置会在内存中保留几分钟，以便加快重复请求的速度。",
+  "legal.privacy.content.text": "当 AI 应用请求你的潜水记录时，{app} 会从 PADI 获取它们并传递给该应用。它们仅在请求处理期间保存在内存中，不会保存到数据库或磁盘上，潜水照片和潜水证书卡也是如此。唯一的例外是上文所述的你的个人资料照片。服务器日志只包含上文所述的简短错误信息。你的 PADI 潜水日志的单位设置会在内存中保留几分钟，以便加快重复请求的速度。",
   "legal.privacy.content.sent": "你的 AI 应用添加、更改或删除的潜水，会在你于 PADI 的潜水日志中直接更改，就像你在 PADI 网站上操作一样。当你提交一次潜水进行验证时，PADI 会将该请求转给你指定的 PADI 专业会员。",
 
   "legal.privacy.bases.title": "法律依据",
   "legal.privacy.bases.lead": "我们依照瑞士 FADP 处理你的数据。在适用 GDPR 的情况下，我们依据以下法律依据：",
-  "legal.privacy.bases.contract": "<strong>合同</strong>（GDPR 第 6 条第 1 款 b 项）：提供你注册的服务，即你的账户、你的 PADI 连接、你已连接的应用以及你的活动日志。",
+  "legal.privacy.bases.contract": "<strong>合同</strong>（GDPR 第 6 条第 1 款 b 项）：提供你注册的服务，即你的账户、你的 PADI 连接和个人资料照片、你已连接的应用以及你的活动日志。",
   "legal.privacy.bases.interest": "<strong>正当利益</strong>（GDPR 第 6 条第 1 款 f 项）：保障服务的安全和正常运行，包括限制重复尝试、服务器日志、备份以及防范滥用。",
   "legal.privacy.bases.law": "<strong>法律义务</strong>（GDPR 第 6 条第 1 款 c 项）：当法律要求我们保留或提供数据时。",
 
   "legal.privacy.retention.title": "我们保留数据的时间",
   "legal.privacy.retention.account": "<strong>账户：</strong>直到你或管理员将其删除。",
-  "legal.privacy.retention.padi": "<strong>PADI 连接：</strong>直到你在 PADI 账户页面将其移除，或删除你的账户。之后登录令牌会从此服务器上删除，并且它会在 PADI 处自行过期。",
+  "legal.privacy.retention.padi": "<strong>PADI 连接和个人资料照片：</strong>直到你在 PADI 账户页面移除该连接、连接另一个 PADI 账户，或删除你的账户。之后登录令牌和照片会从此服务器上删除，并且令牌会在 PADI 处自行过期。如果你的 PADI 账户不再有已批准的照片，该副本会在下一次检查时被删除。",
   "legal.privacy.retention.request": "<strong>访问申请：</strong>如被拒绝则立即删除；如无人处理，则在 30 天后删除。写给管理员的留言会在申请获批时删除。有关某个申请的通知电子邮件会保留在管理员的邮箱中，直到管理员将其删除。",
   "legal.privacy.retention.sessions": "<strong>浏览器会话：</strong>直到你退出登录，最长 {lifetime}。",
   "legal.privacy.retention.tokens": "<strong>应用连接：</strong>访问令牌的有效期为 {access}。连接会在你撤销它时结束，或在连续 {refresh}未使用后结束。每个令牌会在过期一天后被删除。",
@@ -57,7 +58,7 @@ export default {
 
   "legal.privacy.recipients.title": "谁会收到你的数据",
   "legal.privacy.recipients.lead": "我们不会出售你的数据，不会与广告商共享，也不会用它来训练 AI 模型。你的数据只会提供给：",
-  "legal.privacy.recipients.padi": "<strong>PADI。</strong>为了访问你的潜水日志，{app} 会使用你输入的电子邮件地址和密码登录一次 PADI 的服务器，然后将你或你的 AI 应用发出的请求发送给 PADI：读取、添加、更改和删除潜水，读取你的潜水证书卡和潜水照片，查找 PADI 专业会员，以及将潜水提交给 PADI 专业会员验证。PADI 通过 Amazon Web Services（AWS Cognito）为你登录。PADI 依据其自己的隐私政策处理这些数据。",
+  "legal.privacy.recipients.padi": "<strong>PADI。</strong>为了访问你的潜水日志，{app} 会使用你输入的电子邮件地址和密码登录一次 PADI 的服务器，然后将你或你的 AI 应用发出的请求发送给 PADI：读取、添加、更改和删除潜水，读取你的潜水证书卡、个人资料照片和潜水照片，查找 PADI 专业会员，以及将潜水提交给 PADI 专业会员验证。PADI 通过 Amazon Web Services（AWS Cognito）为你登录。PADI 以指向存储服务的临时链接提供个人资料照片，该存储服务可能由云服务提供商为 PADI 运营；{app} 不会向其发送任何登录数据。PADI 依据其自己的隐私政策处理这些数据。",
   "legal.privacy.recipients.apps": "<strong>你连接的 AI 应用。</strong>你批准的每个应用（例如 Anthropic 的 Claude 或 OpenAI 的 ChatGPT）都会收到它所请求的潜水日志和潜水证书数据，以及其操作的结果。该应用如何处理这些数据，受其自己的条款和隐私政策以及你在该应用中的设置约束。我们对此无法控制。",
   "legal.privacy.recipients.hosting": "<strong>我们的托管服务提供商。</strong>{app} 运行在向云托管服务提供商租用的服务器上。该提供商为我们存储数据，不得将其用于自身目的。",
   "legal.privacy.recipients.admin": "<strong>管理员。</strong>{app} 的管理员可以看到账户列表，其中包括电子邮件地址、状态、是否已连接 PADI、上次登录时间、过去 7 天的工具调用次数，以及访问申请中的留言。管理页面永远不会显示你的 PADI 连接或你的登录令牌。如果本服务设置了邮件服务器，并且管理员没有关闭有关访问申请的电子邮件通知（通知默认是打开的），管理员还会通过电子邮件收到每个新申请的电子邮件地址和留言。这些电子邮件通过本服务的邮件服务器发送。",
@@ -79,7 +80,7 @@ export default {
   "legal.privacy.rights.lead": "你有权了解我们持有你的哪些数据、获取副本、要求更正或删除数据、限制或反对对数据的使用，以及将数据转移到其他地方。其中很多操作你可以自己完成：",
   "legal.privacy.rights.padi": "在 <a href=\"/account\">PADI 账户</a>页面更改或移除你的 PADI 连接。",
   "legal.privacy.rights.apps": "在<a href=\"/account/connections\">已连接的应用</a>页面查看你已连接的应用和活动日志，并撤销任何应用的访问权限。",
-  "legal.privacy.rights.delete": "在<a href=\"/account/security\">安全性</a>页面删除你的账户。这会立即删除你的账户、PADI 连接、会话、应用连接和活动日志。备份中的副本会随着备份被替换而消失。你在 PADI 的潜水日志不会受到影响。",
+  "legal.privacy.rights.delete": "在<a href=\"/account/security\">安全性</a>页面删除你的账户。这会立即删除你的账户、PADI 连接、个人资料照片、会话、应用连接和活动日志。备份中的副本会随着备份被替换而消失。你在 PADI 的潜水日志不会受到影响。",
   "legal.privacy.rights.email": "如有其他任何需求，请发送电子邮件至 {email}。我们会在 30 天内答复。",
   "legal.privacy.rights.complaint": "你也可以向数据保护机构投诉：在瑞士为联邦数据保护和信息专员（FDPIC），在欧盟为你居住或工作所在国家的数据保护机构。",
 

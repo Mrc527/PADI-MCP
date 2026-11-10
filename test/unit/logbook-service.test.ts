@@ -31,6 +31,7 @@ import type {
   LogbookBackend,
   LogType,
   PadiAccount,
+  ProfilePhoto,
   Units,
   WireLog,
   WireLogInsert,
@@ -222,6 +223,9 @@ class FakeBackend implements LogbookBackend {
   }
   async getPhoto(_logId: number, photoId: string): Promise<{ data: Buffer; mimeType: string }> {
     return { data: this.photos[photoId]!, mimeType: this.photoTypes[photoId] ?? "image/jpeg" };
+  }
+  async getProfilePhoto(): Promise<ProfilePhoto | undefined> {
+    return undefined;
   }
   async account(): Promise<PadiAccount> {
     return { affiliateId: "10000001", isPro: false };

@@ -57,7 +57,7 @@ What the AI can do:
 In web mode the server is a small website plus an MCP endpoint:
 
 - People **create an account** on the website. On the account page they **connect their PADI account**: they type the e-mail and password they use on PADI and click **Save and test**. The server signs in to PADI right away and saves the connection only if that works. The password is used once and never stored: the server keeps only an encrypted PADI refresh token. They also choose the units (the PADI logbook setting, metric or imperial) and their time zone (it decides what "today" is), and can turn on read-only mode.
-- Once connected, the account page shows the PADI name, the affiliate id, the number of dives and the last sign-in. Units, time zone and read-only can be changed there without signing in again. **Reconnect** signs in to PADI again (needed after a PADI password change), and **Remove** deletes the stored sign-in. If PADI ends the sign-in, the page and the AI app both say so, and the user signs in again with **Reconnect**.
+- Once connected, the account page shows the PADI name, the affiliate id, the number of dives and the last sign-in. The user's picture in the top bar is the approved certification photo of their PADI account (the photo on their eCards, as on the PADI website), when there is one; otherwise their initials. Units, time zone and read-only can be changed there without signing in again. **Reconnect** signs in to PADI again (needed after a PADI password change), and **Remove** deletes the stored sign-in. If PADI ends the sign-in, the page and the AI app both say so, and the user signs in again with **Reconnect**.
 - They add **one URL** (`https://your-server/mcp`) to their AI app (in Claude a **custom connector**). The app opens a sign-in window, they sign in to your server and click **Allow**. From then on the app works with *their* PADI logbook.
 - An **admin page** controls who can sign up (request access with approval, invite codes, open, closed), read-only mode for everyone, which AI apps may connect, token lifetimes, users and connected apps.
 
@@ -89,6 +89,7 @@ Put it behind an HTTPS reverse proxy (see [deploy/nginx.conf.example](deploy/ngi
 The server needs outbound HTTPS to:
 
 - PADI's hosts (see [How sign-in to PADI works](#how-sign-in-to-padi-works-and-what-is-stored)).
+- The storage host of the users' PADI profile photos. PADI hands out each photo as a temporary link to a storage service (probably cloud storage). Without access to it, users see their initials instead of their photo.
 - The hosts of the AI apps' client metadata documents. When an app connects with a `client_id` URL, the server fetches that document, for example from `claude.ai` or `chatgpt.com`. If the fetch fails, built-in copies of Claude's and ChatGPT's documents are used; other apps that sign in this way cannot connect without it.
 - Its own `PUBLIC_URL`, for **Check public setup** on the admin page.
 - Your SMTP server, only if you want e-mails about access requests.
@@ -342,7 +343,7 @@ Environment variables for `--web`:
 | `SMTP_URL` | (none) | Optional SMTP server for e-mails to administrators about access requests, for example `smtps://user:password@mail.example.com:465` (`SMTP_URL_FILE` also works). Without it, no e-mail is sent. The server checks it at startup and does not start if it is not an `smtp://` or `smtps://` address with a host name. The connection must be encrypted: `smtps://` uses TLS from the start, and with `smtp://` the server must offer STARTTLS, otherwise nothing is sent, not even the password. For a mail server on the same machine without TLS, add `?requireTLS=false` to the URL. |
 | `NOTIFY_FROM` | see text | Sender address of those e-mails: an address, or a name and an address (`MCP for PADI <noreply@example.com>`). Default: the SMTP user name when it is an e-mail address. If that user name is not an e-mail address, `NOTIFY_FROM` is required: the server does not start without it. Use an address your SMTP server may send from. The server does not start if `NOTIFY_FROM` is not an e-mail address. |
 | `PADI_API_MODE` | `proxy` | Which PADI logbook endpoint every user's connection uses: `proxy`, `direct` or `auto`. See [How sign-in to PADI works](#how-sign-in-to-padi-works-and-what-is-stored). With the Docker Compose files in `deploy/`, set it in `.env`. |
-| `PADI_COGNITO_URL`, `PADI_AUTH_URL`, `PADI_LOGBOOK_URL`, `PADI_DIRECT_URL`, `PADI_INSTRUCTOR_URL`, `PADI_DIRECT_INSTRUCTOR_URL`, `PADI_ECARD_URL`, `PADI_IMAGES_URL`, `PADI_CLIENT_ID`, `PADI_COGNITO_REGION` | PADI | Operator-only overrides that apply to every user, for tests against a local mock PADI API. Users can never change server addresses. |
+| `PADI_COGNITO_URL`, `PADI_AUTH_URL`, `PADI_LOGBOOK_URL`, `PADI_DIRECT_URL`, `PADI_INSTRUCTOR_URL`, `PADI_DIRECT_INSTRUCTOR_URL`, `PADI_ECARD_URL`, `PADI_IMAGES_URL`, `PADI_PHOTO_URL`, `PADI_CLIENT_ID`, `PADI_COGNITO_REGION` | PADI | Operator-only overrides that apply to every user, for tests against a local mock PADI API. Users can never change server addresses. `PADI_PHOTO_URL` is the certification photo: when other PADI addresses are set but it is not, no photo is fetched (nothing goes to the real PADI); an `http://` value (a local mock) also lets the photo link be `http://` and on a local address. |
 
 Everything else is configured on the admin page.
 
@@ -376,7 +377,7 @@ After a wrong e-mail or password the server never tries again by itself, so your
 - `direct`: `divelog.global-prod.padi.com/v1/graphql`, the endpoint the current PADI web app uses.
 - `auto`: start with `proxy`; if it keeps failing (not found or server errors twice in a row, or "not signed in" right after a fresh sign-in), switch to `direct` until the server restarts.
 
-Other PADI hosts: `ecard.global-prod.padi.com` (eCards), `logbook-images-api.padi.com` (dive photos), and the instructor lookup on the logbook host (`dive-log-service.global-prod.padi.com` in `direct` mode). The PADI client talks to no other hosts. Writes are sent one after the other per user, failed requests are retried at most 3 times with a pause (on 429 and 5xx answers), and every request times out after 20 seconds.
+Other PADI hosts: `ecard.global-prod.padi.com` (eCards), `logbook-images-api.padi.com` (dive photos), the instructor lookup on the logbook host (`dive-log-service.global-prod.padi.com` in `direct` mode), and in the web service `api.padi.com` (the certification photo, shown as the user's picture). The PADI client talks to no other hosts, except the storage host of the photo link that PADI hands out: that link is fetched without any PADI token, only over HTTPS on the standard port, only when the host has no private or local address, with at most 2 redirects, 10 seconds and 2 MB, and only JPEG, PNG, GIF and WebP images are kept. The link is never logged. Writes are sent one after the other per user, failed requests are retried at most 3 times with a pause (on 429 and 5xx answers), and every request times out after 20 seconds.
 
 **What is stored.**
 
@@ -385,7 +386,8 @@ Other PADI hosts: `ecard.global-prod.padi.com` (eCards), `logbook-images-api.pad
 | PADI password | Never. Used once to sign in, then forgotten. | Only where you put it (environment variable or file). |
 | PADI refresh token | Encrypted with AES-256-GCM (key in `MASTER_KEY` or `DATA_DIR/master.key`), tied to your account. A renewed refresh token replaces the old one. | In memory, or in the file `PADI_TOKEN_CACHE` (mode 0600) if you set it. |
 | Other PADI details | Your PADI e-mail, name, affiliate id, login method, units, read-only setting and time zone, and when you connected (all encrypted with the token). | Nothing. |
-| Dives, notes, photos, eCards | Never stored. They pass between PADI and your AI app while a request runs. | Never stored. |
+| Profile photo | A copy of the approved certification photo of your PADI account, shown as your picture on the site. Checked about once a day when you open the account page; deleted when you remove the PADI connection, connect another PADI account or delete your account. | Nothing. |
+| Dives, notes, dive photos, eCards | Never stored. They pass between PADI and your AI app while a request runs. | Never stored. |
 | Activity | A log of tool calls (time, app, tool, duration, success; no content), kept 90 days. | Nothing. |
 
 **Locked dives.** Dives that wait for a PADI Pro (`Pending`) or are verified (`Verified`, `QR Code Verified`) are locked: the tools refuse to change or delete them, the same way the PADI web app does.

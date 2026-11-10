@@ -17,7 +17,8 @@ import { PadiSession } from "../padi/session.js";
 import { isValidTimeZone } from "../util/dates.js";
 import { describeError, UserFacingError } from "../util/errors.js";
 import { connectCard } from "./connect.js";
-import { bool, page, returnTo, str, type WebContext } from "./context.js";
+import { PHOTO_TYPES } from "./avatar.js";
+import { avatarUrl, bool, page, returnTo, str, type WebContext } from "./context.js";
 import { hashPassword, verifyPassword } from "./crypto.js";
 import { isEmail } from "./email.js";
 import { avatar, formatDate, html, type SafeHtml } from "./html.js";
@@ -165,11 +166,12 @@ export function accountRoutes(ctx: WebContext): Router {
   const tile = (service: Service, name: MessageKey, text: MessageKey, state: SafeHtml) =>
     html`<div class="tile"><div class="tile-head">${serviceIcon(service, "lg")}<strong>${t(name)}</strong></div><p>${t(text)}</p>${state}</div>`;
 
-  const profile = (email: string, line: string) =>
+  /** The page header: the profile photo (or the initials), the e-mail address and one line. */
+  const profile = (user: User, line: string) =>
     html`<section class="profile">
-      ${avatar(email, "xl")}
+      ${avatar(user.email, user.avatarAt ? avatarUrl(user.avatarAt) : undefined, "xl")}
       <div>
-        <h1>${email.split("@")[0]}<wbr>@${email.split("@").slice(1).join("@")}</h1>
+        <h1>${user.email.split("@")[0]}<wbr>@${user.email.split("@").slice(1).join("@")}</h1>
         <p>${line}</p>
       </div>
     </section>`;
@@ -201,7 +203,7 @@ export function accountRoutes(ctx: WebContext): Router {
       req,
       res,
       { title: t("account.title"), active: "account", ...(opts.flash ? { flash: opts.flash } : {}) },
-      html`${profile(s.user.email, readOnly ? t("account.profile.demoReadOnly") : t("account.profile.demo"))}
+      html`${profile(s.user, readOnly ? t("account.profile.demoReadOnly") : t("account.profile.demo"))}
       <div class="tiles">
         ${tile("logbook", "account.service.logbook", readOnly ? "account.tile.logbookReadOnly" : "account.tile.logbook", readOnly ? html`<span class="badge ok">${t("account.state.onReadOnly")}</span>` : on)}
         ${tile("cards", "account.service.cards", "account.tile.cards", on)}
@@ -247,8 +249,12 @@ export function accountRoutes(ctx: WebContext): Router {
     const server = ctx.store.getSettings();
     const read = ctx.store.readPadiSettings(s.user.id);
     const stored = read.settings;
-    // Reading the dive count may find that the sign-in expired (the pool marks it): read the user again.
-    const count = stored && !s.user.padiNeedsReconnect ? await diveCount(s.user) : undefined;
+    // Reading the dive count may find that the sign-in expired (the pool marks it): read the user
+    // again. The profile photo is checked meanwhile (when due).
+    const [count, avatarAt] = await Promise.all([stored && !s.user.padiNeedsReconnect ? diveCount(s.user) : undefined, ctx.avatars.refresh(s.user)]);
+    // The top bar reads the session's user, so it shows a photo found just now.
+    if (avatarAt) s.user.avatarAt = avatarAt;
+    else delete s.user.avatarAt;
     const expired = !!stored && (ctx.store.getUser(s.user.id)?.padiNeedsReconnect ?? s.user.padiNeedsReconnect);
     const readOnly = server.forceReadOnly || stored?.readOnly === true;
     const csrf = html`<input type="hidden" name="_csrf" value="${s.csrf}">${returnTo(req) ? html`<input type="hidden" name="next" value="${returnTo(req)}">` : ""}`;
@@ -338,7 +344,7 @@ export function accountRoutes(ctx: WebContext): Router {
       req,
       res,
       { title: t("account.title"), active: "account", ...(opts.error ? { flash: { kind: "error", text: opts.error } } : opts.flash ? { flash: opts.flash } : {}) },
-      html`${profile(s.user.email, line)}
+      html`${profile(s.user, line)}
       <div class="tiles">
         ${tile("logbook", "account.service.logbook", readOnly ? "account.tile.logbookReadOnly" : "account.tile.logbook", logbookState)}
         ${tile("cards", "account.service.cards", "account.tile.cards", cardsState)}
@@ -349,6 +355,23 @@ export function accountRoutes(ctx: WebContext): Router {
   };
 
   r.get("/account", (req, res) => renderAccount(req, res));
+
+  /** The profile photo from the user's PADI account (only ever shown to that user). */
+  r.get("/account/avatar", (_req, res) => {
+    const s = locals(res).session!;
+    const photo = ctx.store.getAvatar(s.user.id);
+    if (!photo || !PHOTO_TYPES.has(photo.type)) {
+      res.status(404).type("text/plain").send("No photo");
+      return;
+    }
+    // Only this user's browser may keep a copy, and it must ask before each use: after sign-out
+    // the question needs a session again, so the next person at a shared computer gets no photo.
+    // The ETag makes the usual answer a short 304.
+    res.setHeader("cache-control", "private, no-cache");
+    res.setHeader("content-security-policy", "default-src 'none'; sandbox");
+    res.setHeader("x-content-type-options", "nosniff");
+    res.type(photo.type).send(photo.data);
+  });
 
   /**
    * "Save and test": sign in to PADI, read the dive count once, save the connection. From the

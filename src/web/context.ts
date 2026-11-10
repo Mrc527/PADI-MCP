@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import type { DemoRegistry } from "../demo/index.js";
 import type { ServicePool } from "./accounts.js";
+import type { AvatarService } from "./avatar.js";
 import { layout, type LayoutOptions, type SafeHtml } from "./html.js";
 import { LOCALES, t, type Locale, type MessageKey } from "./i18n/index.js";
 import type { ActivityHub } from "./live.js";
@@ -15,6 +16,8 @@ export interface WebContext {
   pool: ServicePool;
   /** The in-memory stores of the demo accounts and their daily reset. */
   demo: DemoRegistry;
+  /** Each user's profile photo from PADI. */
+  avatars: AvatarService;
   /** E-mails to administrators about new access requests. */
   notices: RequestNotices;
   live: ActivityHub;
@@ -132,6 +135,7 @@ export function page(req: Request, res: Response, opts: Omit<LayoutOptions, "use
                 user: {
                   email: s.user.email,
                   isAdmin: s.user.isAdmin,
+                  ...(s.user.avatarAt ? { avatar: avatarUrl(s.user.avatarAt) } : {}),
                   ...(locals(res).accessRequests ? { accessRequests: locals(res).accessRequests } : {}),
                 },
                 csrf: s.csrf,
@@ -143,6 +147,11 @@ export function page(req: Request, res: Response, opts: Omit<LayoutOptions, "use
         body,
       ),
     );
+}
+
+/** The profile photo's address; the version makes browsers fetch a changed photo. */
+export function avatarUrl(avatarAt: number): string {
+  return `/account/avatar?v=${avatarAt}`;
 }
 
 export function str(value: unknown, max = 2000): string {

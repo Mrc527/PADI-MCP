@@ -151,7 +151,7 @@ export default {
   "admin.users.resetPassword": "Restablecer contraseña",
   "admin.users.confirmResetPassword": "¿Generar una nueva contraseña temporal para este usuario?",
   "admin.users.makeDemo": "Convertir en cuenta de demostración",
-  "admin.users.confirmMakeDemo": "¿Convertir la cuenta de {email} en una cuenta de demostración? Se eliminará su conexión con PADI y, a partir de ahora, sus apps conectadas verán la bitácora de ejemplo.",
+  "admin.users.confirmMakeDemo": "¿Convertir la cuenta de {email} en una cuenta de demostración? Se eliminarán su conexión con PADI y su foto de perfil y, a partir de ahora, sus apps conectadas verán la bitácora de ejemplo.",
   "admin.users.makeNormal": "Convertir en cuenta normal",
   "admin.users.confirmMakeNormal": "¿Volver a convertir la cuenta de {email} en una cuenta normal? Se eliminarán los datos de demostración y podrá conectar su propia cuenta de PADI.",
   "admin.users.delete": "Eliminar",

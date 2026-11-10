@@ -160,7 +160,7 @@ export default {
   "admin.users.resetPassword": "Passwort zurücksetzen",
   "admin.users.confirmResetPassword": "Ein neues temporäres Passwort für diesen Benutzer erstellen?",
   "admin.users.makeDemo": "Zum Demo-Account machen",
-  "admin.users.confirmMakeDemo": "{email} in einen Demo-Account umwandeln? Die PADI-Verbindung wird gelöscht, und die verbundenen Apps sehen ab sofort das Beispiel-Logbuch.",
+  "admin.users.confirmMakeDemo": "{email} in einen Demo-Account umwandeln? Die PADI-Verbindung und das Profilfoto werden gelöscht, und die verbundenen Apps sehen ab sofort das Beispiel-Logbuch.",
   "admin.users.makeNormal": "Zum normalen Account machen",
   "admin.users.confirmMakeNormal": "{email} wieder in einen normalen Account umwandeln? Die Demo-Daten werden gelöscht, und die Person kann ihren eigenen PADI-Account verbinden.",
   "admin.users.delete": "Löschen",

@@ -46,7 +46,7 @@ export function raw(value: string): SafeHtml {
 
 export interface LayoutOptions {
   title: string;
-  user?: { email: string; isAdmin: boolean; accessRequests?: number };
+  user?: { email: string; isAdmin: boolean; accessRequests?: number; avatar?: string };
   csrf?: string;
   active?: string;
   flash?: { kind: "ok" | "error" | "info"; text: string };
@@ -60,9 +60,12 @@ export interface LayoutOptions {
   description?: string;
 }
 
-/** The round profile mark: the initials of the e-mail address. */
-export function avatar(email: string, size: "" | "xl" = "", attrs: SafeHtml = html` aria-hidden="true"`): SafeHtml {
-  return html`<span class="avatar${size ? ` ${size}` : ""}"${attrs}>${initials(email)}</span>`;
+/** The round profile picture: the PADI profile photo when there is one, else the initials. */
+export function avatar(email: string, photo: string | undefined, size: "" | "xl" = "", attrs: SafeHtml = html` aria-hidden="true"`): SafeHtml {
+  const cls = `avatar${size ? ` ${size}` : ""}${photo ? " photo" : ""}`;
+  return photo
+    ? html`<span class="${cls}"${attrs}><img src="${photo}" alt="" width="64" height="64" decoding="async"></span>`
+    : html`<span class="${cls}"${attrs}>${initials(email)}</span>`;
 }
 
 /** Changes whenever the stylesheet or script changes, so browsers never keep an old copy. */
@@ -89,7 +92,7 @@ export function layout(opts: LayoutOptions, body: SafeHtml): string {
             : ""}
         </nav>
         <div class="me">
-          ${avatar(opts.user.email, "", html` role="img" title="${opts.user.email}" aria-label="${t("common.nav.signedInAs", { email: opts.user.email })}"`)}
+          ${avatar(opts.user.email, opts.user.avatar, "", html` role="img" title="${opts.user.email}" aria-label="${t("common.nav.signedInAs", { email: opts.user.email })}"`)}
           <form method="post" action="/logout" class="inline">
             <input type="hidden" name="_csrf" value="${opts.csrf ?? ""}">
             <button type="submit" class="link">${t("common.nav.signOut")}</button>

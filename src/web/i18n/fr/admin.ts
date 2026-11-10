@@ -151,7 +151,7 @@ export default {
   "admin.users.resetPassword": "Réinitialiser le mot de passe",
   "admin.users.confirmResetPassword": "Générer un nouveau mot de passe temporaire pour cet utilisateur ?",
   "admin.users.makeDemo": "Convertir en compte de démo",
-  "admin.users.confirmMakeDemo": "Convertir {email} en compte de démo ? Sa connexion PADI sera supprimée, et ses apps connectées verront désormais le carnet de plongée d'exemple.",
+  "admin.users.confirmMakeDemo": "Convertir {email} en compte de démo ? Sa connexion PADI et sa photo de profil seront supprimées, et ses apps connectées verront désormais le carnet de plongée d'exemple.",
   "admin.users.makeNormal": "Convertir en compte normal",
   "admin.users.confirmMakeNormal": "Reconvertir {email} en compte normal ? Les données de démo seront supprimées, et la personne pourra connecter son propre compte PADI.",
   "admin.users.delete": "Supprimer",

@@ -113,6 +113,17 @@ const MIGRATIONS: string[] = [
   CREATE INDEX activity_user ON activity(user_id, at);
   CREATE INDEX activity_user_id ON activity(user_id, id);
   `,
+  // 2: the diver's profile photo from PADI (the certification photo), kept out of the users table,
+  // which every session lookup reads
+  `CREATE TABLE avatars (
+     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+     data BLOB NOT NULL,
+     type TEXT NOT NULL,
+     updated_at INTEGER NOT NULL
+   );
+   ALTER TABLE users ADD COLUMN avatar_at INTEGER;
+   ALTER TABLE users ADD COLUMN avatar_checked_at INTEGER;
+   ALTER TABLE users ADD COLUMN avatar_check_failed INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 export type Db = DatabaseSync;
@@ -126,7 +137,9 @@ export function openDatabase(dataDir: string): Db {
     file = path.join(dataDir, "padi-mcp.db");
   }
   const db = new DatabaseSync(file);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+  // secure_delete: deleted rows (a profile photo, a PADI connection, a whole account) are
+  // overwritten with zeros, so they cannot be read back from the file's free pages.
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA secure_delete = ON;");
   migrate(db);
   return db;
 }

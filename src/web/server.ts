@@ -12,6 +12,7 @@ import { ConfigError, redactForLog } from "../util/errors.js";
 import { VERSION } from "../version.js";
 import { operatorOverrides, ServicePool } from "./accounts.js";
 import { APP_CSS, APP_JS } from "./assets.js";
+import { AvatarService } from "./avatar.js";
 import { page, type WebContext } from "./context.js";
 import { hashPassword, loadMasterKey, SecretBox } from "./crypto.js";
 import { openDatabase } from "./db.js";
@@ -168,6 +169,7 @@ export async function createWebApp(opts: WebOptions): Promise<WebApp> {
     provider,
     pool,
     demo,
+    avatars: new AvatarService(store, pool, opts.log),
     notices: new RequestNotices({
       store,
       publicUrl,
@@ -288,6 +290,8 @@ export async function createWebApp(opts: WebOptions): Promise<WebApp> {
       // An e-mail being sent would write to the closed database.
       await ctx.notices.close();
       await pool.closeAll();
+      // A photo check still running would write to the closed database.
+      await ctx.avatars.idle();
       db.close();
     },
   };

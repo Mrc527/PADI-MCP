@@ -58,6 +58,7 @@ src/
   version.ts                                                                 [template]
   util/errors.ts      + redaction of JWTs and Bearer tokens                  [template, adapted]
   util/dates.ts, util/text.ts                                                [template, trimmed]
+  util/net.ts         private-address check (client metadata documents, profile photo)
   padi/
     endpoints.ts      default URLs, client id, region; operator overrides
     jwt.ts            decode (no verification) a JWT payload; claims helpers
@@ -66,6 +67,8 @@ src/
     http.ts           fetch wrapper: timeouts, retry with backoff on 429/5xx, error mapping
     graphql.ts        GraphQL transport: "proxy" and "direct" modes, Hasura error mapping
     api.ts            PadiApi implements LogbookBackend (wire level)
+    photo.ts          image types by their first bytes; the profile (certification) photo:
+                      PADI's answer and the safe download of its pre-signed link
   logbook/
     types.ts          THE CONTRACT: wire types, domain types, LogbookBackend, enums
     enums.ts          enum values, labels, aliases (e.g. "shore" -> BeachShore)
@@ -82,7 +85,7 @@ test/unit, test/integration, test/helpers                                    [te
 ```
 
 Files of the template that are dropped: `src/mail/**`, `src/calendar/**`, `src/notes/**`,
-`src/contacts/**`, `src/util/addresses.ts`, `src/web/avatar.ts`, `src/demo/{mail,mail-data,caldav,calendar-data}.ts`,
+`src/contacts/**`, `src/util/addresses.ts`, `src/demo/{mail,mail-data,caldav,calendar-data}.ts`,
 the iCloud videos in `assets/video/*.mp4|jpg` (the start page works without video), and their tests.
 
 ## 4. PADI backend (summary; details in padi-api.md)
@@ -135,11 +138,17 @@ Other REST endpoints (same bearer token):
   (pros, `custom:affiliate_type_id` 2 or 3: `GetAlleCardListPro`).
 - Photos: `https://logbook-images-api.padi.com/api/Image/GetImageList/{logId}`,
   `/GetImage/{logId}/{imageId}` (binary).
+- Certification photo (the profile photo of the PADI website, web service only):
+  `GET https://api.padi.com/p/photos/web/certification?status=approved` (headers `Authorization`,
+  `affiliate-id`; a redirect is not followed) answers `{preSignedURL, status, office}`; only
+  `status` `APPROVED` with a link is a photo. The link is downloaded without any PADI header, see
+  section 8 (profile photo).
 
 All URLs are operator-overridable (for tests against a local mock), never by users:
 `PADI_COGNITO_URL`, `PADI_AUTH_URL`, `PADI_LOGBOOK_URL`, `PADI_DIRECT_URL`,
 `PADI_INSTRUCTOR_URL`, `PADI_DIRECT_INSTRUCTOR_URL`, `PADI_ECARD_URL`, `PADI_IMAGES_URL`,
-`PADI_CLIENT_ID`, `PADI_COGNITO_REGION`.
+`PADI_PHOTO_URL`, `PADI_CLIENT_ID`, `PADI_COGNITO_REGION`. When other PADI URLs are overridden
+(a mock) but `PADI_PHOTO_URL` is not, there is no photo URL, so the real PADI is never asked.
 
 ## 5. The contract (`src/logbook/types.ts`)
 
@@ -195,6 +204,7 @@ export interface LogbookBackend {
   listCertifications(): Promise<Certification[]>;
   listPhotoIds(logId: number): Promise<string[]>;
   getPhoto(logId: number, photoId: string): Promise<{ data: Buffer; mimeType: string }>;
+  getProfilePhoto(opts?: { note?: (reason: string) => void }): Promise<ProfilePhoto | undefined>; // undefined: none; throws: try later
   account(): Promise<PadiAccount>;                      // from the token claims (no network for the demo)
   check(): Promise<{ ok: boolean; error?: string; dives?: number; apiMode?: string }>;
   close(): Promise<void>;
@@ -280,7 +290,32 @@ of section 4. `AppConfig.secrets` holds the password and refresh token for redac
   not rebuilt). A refresh that fails with an invalid/expired refresh token marks the connection
   `needsReconnect`; tools then answer "Your PADI sign-in expired. Sign in again at <PUBLIC_URL>/account".
 - **DB**: one fresh initial schema (no migrations from iCloud): column `service_enc`,
-  `service_updated_at`, `padi_needs_reconnect`, and the template's other tables. No avatar table.
+  `service_updated_at`, `padi_needs_reconnect`, and the template's other tables. Migration 2 adds
+  the template's `avatars` table and `users.avatar_at`, `avatar_checked_at`, `avatar_check_failed`.
+- **Profile photo** (as the template's iCloud "My Card" photo, `src/web/avatar.ts`): the top bar
+  and the account page header show the user's PADI certification photo, the picture the PADI
+  website shows. `AvatarService` checks it when the account page opens: right after the PADI
+  connection changes, then once a day; a failed check is tried again after an hour; the page
+  waits at most 4 s. It asks through the user's services in the pool (token refresh and the
+  TokenSink as for tools), never for a demo account, and not while the connection needs a
+  reconnect. Only status `APPROVED` with a link is a photo (any other JSON is "no photo"). PADI
+  errors, an answer that is not JSON at all (a maintenance page) and a redirect (not followed,
+  so the `affiliate-id` header goes nowhere else) are a failed check: the stored photo stays. A
+  check that ends after the PADI connection changed is thrown away, and a page never waits for
+  the check of an older connection. The link is downloaded by `src/padi/photo.ts`: https on the
+  standard port only (http, other ports and local addresses only when `PADI_PHOTO_URL` is an
+  http mock), no PADI header or token, the host resolved and refused when any address is
+  private, loopback, link-local, unique-local, multicast or unspecified (the connection is
+  pinned to the checked address), at most 2 redirects (each checked), 10 s, 2 MB, and JPEG, PNG,
+  GIF or WebP by the first bytes only. The link is never logged. `/account/avatar` serves only
+  the signed-in user's own photo (its type, `private, no-cache` so the browser asks again each
+  time, with the ETag, and gets nothing after sign-out; `nosniff`; CSP `sandbox`). The photo is
+  deleted when the PADI connection is removed, another PADI account is connected, or the account
+  is deleted or becomes a demo account. The database runs with `secure_delete` and a checkpoint
+  follows each such deletion, so the photo also leaves the database files. The privacy policy
+  names the cases a user causes (remove the connection, connect another account, delete the
+  account) in all languages; it does not describe demo accounts, which only an administrator
+  makes.
 - **Admin page**: no service checkboxes (one service); user list column "PADI" (connected / not /
   needs reconnect); overview counts connected users. Everything else as in the template.
 - **Access-request e-mails**: the template sent them through the admin's iCloud SMTP. Now: optional
@@ -302,7 +337,9 @@ of section 4. `AppConfig.secrets` holds the password and refresh token for redac
 - Writes refuse locked dives (Pending/Verified/QR Code Verified).
 - Delete needs the dive title as confirmation; submit-for-verification needs `confirm: true`.
 - Read-only accounts get no write tools at all (template behaviour).
-- Outbound hosts are fixed by the operator; users cannot point the server anywhere.
+- Outbound hosts are fixed by the operator; users cannot point the server anywhere. The one host
+  that is not fixed is the storage host of the profile photo link that PADI hands out: it is
+  fetched without any token and only after the checks of section 8 (public address, https).
 - Test data never contains real people's data. Never copy names or numbers from captured samples.
 
 ## 10. Tests

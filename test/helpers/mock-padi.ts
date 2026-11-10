@@ -6,6 +6,9 @@
  * - the logbook GraphQL API in both transports: the proxy (/api/Logbook, every query scoped by
  *   $affiliate_id) and the direct Hasura endpoint (/v1/graphql, scoped by the token)
  * - the REST endpoints around it: instructor lookup (both hosts), eCards and dive photos
+ * - the certification photo (the profile photo of the PADI website): the photo API answers a
+ *   pre-signed link to a fake storage host (/photo-storage/) on the same server, which refuses
+ *   requests that carry a PADI token, as a real storage host would
  *
  * The logbook data lives in a DemoLogbookStore per account, so the database rules are the same as
  * in the demo backend (typed columns, array literals, MM/DD/YYYY dates, no cascade). GraphQL
@@ -35,6 +38,15 @@ export interface MockAccountOptions {
   affiliateTypeId?: string;
   /** The logbook (default: the invented sample dives). */
   seed?: DemoSeed;
+  /** The certification photo (default: none, status NO_PHOTO). */
+  certificationPhoto?: MockCertificationPhoto;
+}
+
+/** A certification photo: its status at PADI ("APPROVED", "NO_PHOTO", "PENDING", ...) and its file. */
+export interface MockCertificationPhoto {
+  status: string;
+  data?: Buffer;
+  type?: string;
 }
 
 export interface MockAccount extends Required<Omit<MockAccountOptions, "seed">> {
@@ -415,9 +427,15 @@ export class MockPadi {
   rotateRefreshTokens = false;
   /** The next password sign-in answers with this Cognito challenge. */
   challenge: string | undefined;
-  /** HTTP answers to give once, by route ("cognito", "auth", "proxy", "direct", "instructor", "ecard", "images"). */
+  /** HTTP answers to give once, by route ("cognito", "auth", "proxy", "direct", "instructor", "ecard", "images", "photo", "photo-storage"). */
   readonly failures = new Map<string, number[]>();
+  /** Requests to hold until a test releases them, by route (see holdNext). */
+  private readonly holds = new Map<string, Array<Promise<void>>>();
+  /** Every pre-signed photo link handed out (a secret, like at PADI: it must never be logged). */
+  readonly photoLinks: string[] = [];
   private readonly idTokens = new Map<string, IssuedToken>();
+  /** Pre-signed photo links: the key in the path, and the signature the link must carry. */
+  private readonly signedPhotos = new Map<string, { account: MockAccount; signature: string }>();
   private readonly refreshTokens = new Map<string, RefreshGrant>();
   private server: Server | undefined;
   url = "";
@@ -435,6 +453,7 @@ export class MockPadi {
       affiliateTypeId: a.affiliateTypeId ?? "1",
       store: makeStore(a.affiliateId, a.seed ?? sampleDives, tz),
       photos: new Map(),
+      certificationPhoto: a.certificationPhoto ?? { status: "NO_PHOTO" },
     }));
   }
 
@@ -442,9 +461,13 @@ export class MockPadi {
     return this.accounts[0]!;
   }
 
-  /** The PADI_* operator overrides that point the server at this mock. */
-  env(): Record<string, string> {
+  /**
+   * The PADI_* operator overrides that point the server at this mock. With `photo`, also the
+   * certification photo (without it, the server never asks for a photo).
+   */
+  env(opts: { photo?: boolean } = {}): Record<string, string> {
     return {
+      ...(opts.photo ? { PADI_PHOTO_URL: `${this.url}/p/photos/web/certification` } : {}),
       PADI_COGNITO_URL: `${this.url}/cognito/`,
       PADI_AUTH_URL: `${this.url}/auth/api`,
       PADI_LOGBOOK_URL: `${this.url}/api/Logbook`,
@@ -460,6 +483,19 @@ export class MockPadi {
   /** Answer the next request of a route with an HTTP status (once per call). */
   failNext(route: string, status: number): void {
     this.failures.set(route, [...(this.failures.get(route) ?? []), status]);
+  }
+
+  /**
+   * The next request of a route waits until the returned function is called (once per call), so
+   * a test can change things while the server waits for PADI.
+   */
+  holdNext(route: string): () => void {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.holds.set(route, [...(this.holds.get(route) ?? []), gate]);
+    return release;
   }
 
   /** Every ID token issued so far stops working (as if it expired). */
@@ -549,6 +585,8 @@ export class MockPadi {
     const path = url.pathname;
     this.requests.push({ method: req.method ?? "", path, headers: { ...req.headers }, body });
     const route = routeOf(path);
+    const hold = this.holds.get(route)?.shift();
+    if (hold) await hold;
     const failure = this.failures.get(route)?.shift();
     try {
       if (failure) return send(res, failure, { message: `mock failure ${failure}` });
@@ -558,6 +596,8 @@ export class MockPadi {
       if (route === "instructor" && req.method === "GET") return this.instructor(req, res, path);
       if (route === "ecard" && req.method === "GET") return this.ecard(req, res, path);
       if (route === "images" && req.method === "GET") return this.images(req, res, path);
+      if (route === "photo" && req.method === "GET") return this.certificationPhoto(req, res, url);
+      if (route === "photo-storage" && req.method === "GET") return this.photoStorage(req, res, url);
       send(res, 404, { message: "Not Found" });
     } catch (error) {
       send(res, 500, { message: (error as Error).message });
@@ -838,6 +878,49 @@ export class MockPadi {
     }
     send(res, 404, { message: "Not Found" });
   }
+
+  /**
+   * The certification photo, as the PADI website reads it: GET ...?status=approved answers
+   * { preSignedURL, status, office }. An approved photo gets a new pre-signed link to the storage
+   * host each time.
+   */
+  private certificationPhoto(req: IncomingMessage, res: ServerResponse, url: URL): void {
+    const auth = this.bearer(req);
+    if (typeof auth === "string") {
+      res.writeHead(401, { "www-authenticate": "Bearer", "content-length": "0" });
+      return void res.end();
+    }
+    const account = auth.account;
+    // The PADI web app sends this header with the photo request, and so does this server.
+    if (req.headers["affiliate-id"] === undefined) this.violations.push("photo: no affiliate-id header");
+    else if (req.headers["affiliate-id"] !== account.affiliateId) this.violations.push("photo: affiliate-id header of another account");
+    if (url.searchParams.get("status") !== "approved") this.violations.push("photo: asked without status=approved");
+    const photo = account.certificationPhoto;
+    let link: string | null = null;
+    if (photo.status === "APPROVED" && photo.data) {
+      const key = randomBytes(8).toString("hex");
+      const signature = randomBytes(16).toString("hex");
+      this.signedPhotos.set(key, { account, signature });
+      link = `${this.url}/photo-storage/certification/${key}.jpg?X-Amz-Expires=900&X-Amz-Signature=${signature}`;
+      this.photoLinks.push(link);
+    }
+    send(res, 200, { preSignedURL: link, status: photo.status, office: "Mock Office" });
+  }
+
+  /** The storage host of the pre-signed links. Like S3, it refuses a request with another sign-in on top. */
+  private photoStorage(req: IncomingMessage, res: ServerResponse, url: URL): void {
+    if (req.headers.authorization !== undefined || req.headers["affiliate-id"] !== undefined || req.headers.cookie !== undefined) {
+      this.violations.push("photo storage: request with a PADI token, an affiliate-id header or a cookie");
+      return send(res, 400, { message: "Only one auth mechanism allowed" });
+    }
+    const key = url.pathname.match(/^\/photo-storage\/certification\/([0-9a-f]+)\.jpg$/)?.[1];
+    const signed = key ? this.signedPhotos.get(key) : undefined;
+    if (!signed || url.searchParams.get("X-Amz-Signature") !== signed.signature) return send(res, 403, { message: "AccessDenied" });
+    const photo = signed.account.certificationPhoto;
+    if (!photo.data) return send(res, 404, { message: "NoSuchKey" });
+    res.writeHead(200, { "content-type": photo.type ?? "image/jpeg", "content-length": String(photo.data.length) });
+    res.end(photo.data);
+  }
 }
 
 function makeStore(affiliateId: string, seed: DemoSeed, timeZone: string): DemoLogbookStore {
@@ -852,6 +935,8 @@ function routeOf(path: string): string {
   if (path === "/v1/graphql") return "direct";
   if (path.startsWith("/api/eCard/")) return "ecard";
   if (path.startsWith("/api/Image/")) return "images";
+  if (path === "/p/photos/web/certification") return "photo";
+  if (path.startsWith("/photo-storage/")) return "photo-storage";
   return "other";
 }
 

@@ -25,6 +25,12 @@ export interface User {
   serviceUpdatedAt?: number;
   /** The stored PADI sign-in stopped working: the user must sign in to PADI again. */
   padiNeedsReconnect: boolean;
+  /** When the stored profile photo last changed (none stored when absent). */
+  avatarAt?: number;
+  /** When PADI was last asked for the profile photo. */
+  avatarCheckedAt?: number;
+  /** The last check failed (it is tried again sooner). */
+  avatarCheckFailed?: boolean;
   /**
    * Demo account: its logbook is sample data built into the server (src/demo), kept in memory
    * only. It never has PADI settings.
@@ -171,6 +177,9 @@ function toUser(r: Row): User {
     hasPadi: r.service_enc != null,
     ...(r.service_updated_at != null ? { serviceUpdatedAt: Number(r.service_updated_at) } : {}),
     padiNeedsReconnect: r.service_enc != null && Number(r.padi_needs_reconnect) === 1,
+    ...(r.avatar_at != null ? { avatarAt: Number(r.avatar_at) } : {}),
+    ...(r.avatar_checked_at != null ? { avatarCheckedAt: Number(r.avatar_checked_at) } : {}),
+    ...(Number(r.avatar_check_failed) === 1 ? { avatarCheckFailed: true } : {}),
     demo: Number(r.demo) === 1,
     ...(Number(r.demo) === 1 && Number(r.demo_read_only) === 1 ? { demoReadOnly: true } : {}),
     notifyRequests: Number(r.notify_requests ?? 1) === 1,
@@ -237,12 +246,20 @@ export class Store {
    * is deleted. Administrators cannot be demo accounts. Returns false when nothing changed.
    */
   setDemo(id: string, demo: boolean): boolean {
-    const res = demo
-      ? this.db
-          .prepare("UPDATE users SET demo = 1, demo_read_only = 0, service_enc = NULL, padi_needs_reconnect = 0, service_updated_at = ? WHERE id = ? AND is_admin = 0 AND demo = 0")
-          .run(now(), id)
-      : this.db.prepare("UPDATE users SET demo = 0, demo_read_only = 0, service_updated_at = ? WHERE id = ? AND demo = 1").run(now(), id);
-    return Number(res.changes) === 1;
+    let photoDeleted = false;
+    const changed = transaction(this.db, () => {
+      const res = demo
+        ? this.db
+            .prepare("UPDATE users SET demo = 1, demo_read_only = 0, service_enc = NULL, padi_needs_reconnect = 0, service_updated_at = ? WHERE id = ? AND is_admin = 0 AND demo = 0")
+            .run(now(), id)
+        : this.db.prepare("UPDATE users SET demo = 0, demo_read_only = 0, service_updated_at = ? WHERE id = ? AND demo = 1").run(now(), id);
+      if (Number(res.changes) !== 1) return false;
+      // The photo came from the PADI connection that was just deleted.
+      if (demo) photoDeleted = this.clearAvatar(id);
+      return true;
+    });
+    if (photoDeleted) this.flushDeleted();
+    return changed;
   }
 
   setDemoReadOnly(id: string, readOnly: boolean): void {
@@ -352,6 +369,8 @@ export class Store {
 
   deleteUser(id: string): void {
     this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
+    // The account's data, its profile photo too (ON DELETE CASCADE), leaves the database file now.
+    this.flushDeleted();
   }
 
   countAdmins(): number {
@@ -384,12 +403,19 @@ export class Store {
   /**
    * Save or remove a user's PADI connection. This changes service_updated_at (the user's services
    * are rebuilt) and clears "needs reconnect". A demo account never gets one (nothing is saved).
+   * The profile photo goes with the connection: it is deleted when the connection is removed or
+   * another PADI account is connected.
    */
   savePadiSettings(userId: string, settings: PadiAccountSettings | undefined): void {
     const enc = settings ? this.box.seal(JSON.stringify(settings), userId) : null;
-    this.db
-      .prepare("UPDATE users SET service_enc = ?, service_updated_at = ?, padi_needs_reconnect = 0 WHERE id = ? AND (demo = 0 OR ? IS NULL)")
-      .run(enc, now(), userId, enc);
+    const photoDeleted = transaction(this.db, () => {
+      const before = settings ? this.readPadiSettings(userId).settings : undefined;
+      const res = this.db
+        .prepare("UPDATE users SET service_enc = ?, service_updated_at = ?, padi_needs_reconnect = 0 WHERE id = ? AND (demo = 0 OR ? IS NULL)")
+        .run(enc, now(), userId, enc);
+      return Number(res.changes) === 1 && (!settings || before?.affiliateId !== settings.affiliateId) && this.clearAvatar(userId);
+    });
+    if (photoDeleted) this.flushDeleted();
   }
 
   /**
@@ -428,6 +454,75 @@ export class Store {
   /** Mark (or clear) that the stored PADI sign-in no longer works. Keeps service_updated_at. */
   setPadiNeedsReconnect(userId: string, needsReconnect: boolean): void {
     this.db.prepare("UPDATE users SET padi_needs_reconnect = ? WHERE id = ? AND service_enc IS NOT NULL").run(needsReconnect ? 1 : 0, userId);
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Profile photo (the certification photo of the user's PADI account)
+  // -------------------------------------------------------------------------------------------
+
+  getAvatar(userId: string): { data: Buffer; type: string; updatedAt: number } | undefined {
+    const r = this.db.prepare("SELECT data, type, updated_at FROM avatars WHERE user_id = ?").get(userId) as Row | undefined;
+    if (!r) return undefined;
+    return { data: Buffer.from(r.data as Uint8Array), type: String(r.type), updatedAt: Number(r.updated_at) };
+  }
+
+  /**
+   * Store the result of a check (started at `checkedAt`): the photo, or none. Returns the new
+   * avatarAt (unchanged when the photo is the same as before).
+   */
+  saveAvatar(userId: string, photo: { data: Buffer; type: string } | undefined, checkedAt = now()): number | undefined {
+    let photoDeleted = false;
+    const result = transaction(this.db, () => {
+      const user = this.db.prepare("SELECT avatar_at FROM users WHERE id = ?").get(userId) as Row | undefined;
+      if (!user) return undefined;
+      if (!photo) {
+        photoDeleted = this.clearAvatar(userId);
+        this.db.prepare("UPDATE users SET avatar_checked_at = ?, avatar_check_failed = 0 WHERE id = ?").run(checkedAt, userId);
+        return undefined;
+      }
+      const old = this.getAvatar(userId);
+      let at = user.avatar_at != null ? Number(user.avatar_at) : undefined;
+      if (!old || old.type !== photo.type || !old.data.equals(photo.data) || at === undefined) {
+        // Strictly increasing, so the page's ?v= changes even within the same millisecond.
+        at = Math.max(now(), (at ?? 0) + 1);
+        this.db
+          .prepare("INSERT INTO avatars (user_id, data, type, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, type = excluded.type, updated_at = excluded.updated_at")
+          .run(userId, photo.data, photo.type, at);
+        photoDeleted = !!old;
+      }
+      this.db.prepare("UPDATE users SET avatar_at = ?, avatar_checked_at = ?, avatar_check_failed = 0 WHERE id = ?").run(at, checkedAt, userId);
+      return at;
+    });
+    // An old photo was deleted or replaced.
+    if (photoDeleted) this.flushDeleted();
+    return result;
+  }
+
+  /** Remember a check without changing the stored photo (`failed`: it is tried again sooner). */
+  markAvatarChecked(userId: string, checkedAt: number, failed = false): void {
+    this.db.prepare("UPDATE users SET avatar_checked_at = ?, avatar_check_failed = ? WHERE id = ?").run(checkedAt, failed ? 1 : 0, userId);
+  }
+
+  /** Delete the stored photo and its check state. Returns whether a photo was deleted. */
+  private clearAvatar(userId: string): boolean {
+    const deleted = Number(this.db.prepare("DELETE FROM avatars WHERE user_id = ?").run(userId).changes) > 0;
+    this.db.prepare("UPDATE users SET avatar_at = NULL, avatar_checked_at = NULL, avatar_check_failed = 0 WHERE id = ?").run(userId);
+    return deleted;
+  }
+
+  /**
+   * Make deleted data leave the database files now (call it after the transaction). With
+   * secure_delete (db.ts) SQLite overwrites the freed pages with zeros, but until a checkpoint the
+   * file keeps the old pages and the WAL may still hold copies of them: this checkpoint writes the
+   * zeros into the file and empties the WAL. Best effort: if it cannot run now, the next automatic
+   * checkpoint does the same later.
+   */
+  private flushDeleted(): void {
+    try {
+      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      // See above: the automatic checkpoint follows.
+    }
   }
 
   // -------------------------------------------------------------------------------------------

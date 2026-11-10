@@ -25,7 +25,7 @@ export default {
   "account.padi.badgeConnected": "connected",
   "account.padi.badgeNotConnected": "not connected",
   "account.padi.badgeExpired": "sign-in expired",
-  "account.padi.intro": "Sign in with the e-mail address and password you use on padi.com. Your password is used once to sign in and is never stored. This server keeps only a sign-in token from PADI, encrypted.",
+  "account.padi.intro": "Sign in with the e-mail address and password you use on padi.com. Your password is used once to sign in and is never stored. This server keeps an encrypted sign-in token from PADI instead.",
   "account.padi.social": "Do you sign in to PADI with Google, Apple or Facebook? Then your PADI account may have no password yet. Set one first: on <a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">account.padi.com</a> choose <strong>Forgot password</strong> and follow the e-mail from PADI. Then sign in here with your e-mail address and the new password.",
   "account.padi.unreadable": "Your saved PADI connection cannot be read because the server's encryption key changed. Please sign in to PADI again.",
   "account.padi.expired": "Your PADI sign-in expired or was ended, for example after a password change. Your AI apps cannot reach your logbook until you sign in to PADI again below.",
@@ -56,7 +56,7 @@ export default {
   "account.padi.reconnect": "Reconnect",
   "account.padi.reconnectHint": "Sign in to PADI again, for example after you changed your PADI password, or to connect another PADI account.",
   "account.padi.remove": "Remove PADI connection",
-  "account.padi.removeConfirm": "Remove your PADI connection? Your AI apps lose access to your logbook until you sign in again. Your logbook at PADI is not changed.",
+  "account.padi.removeConfirm": "Remove your PADI connection? Your AI apps lose access to your logbook until you sign in again. The copy of your profile photo is deleted too. Your logbook at PADI is not changed.",
 
   // After "Save and test" (shown after the page reloads)
   "account.flash.connected": "Connected to PADI. Your AI apps can use your logbook now.",
@@ -124,7 +124,7 @@ export default {
   "account.security.sessionsHeading": "Sessions",
   "account.security.signOutOthers": "Sign out of all other browsers",
   "account.security.deleteHeading": "Delete account",
-  "account.security.deleteText": "Deletes your account, your saved PADI connection and all app connections. Your logbook at PADI is not touched.",
+  "account.security.deleteText": "Deletes your account, your saved PADI connection, your profile photo and all app connections. Your logbook at PADI is not touched.",
   "account.security.deleteConfirmLabel": "Type your email ({email}) to confirm",
   "account.security.deleteButton": "Delete my account",
   "account.security.wrongPassword": "The current password is wrong.",

@@ -16,6 +16,7 @@ import type {
   LogbookBackend,
   LogType,
   PadiAccount,
+  ProfilePhoto,
   Units,
   WireLog,
   WireLogInsert,
@@ -40,8 +41,12 @@ import {
 } from "./documents.js";
 import type { PadiEndpoints } from "./endpoints.js";
 import { affectedRows, GraphqlClient, PadiGraphqlError } from "./graphql.js";
-import { padiFetch, parseJson, readText, statusError } from "./http.js";
+import { padiFetch, PadiHttpError, parseJson, readText, statusError } from "./http.js";
+import { downloadProfilePhoto, PhotoLinkError, photoLinkFrom, sniffImageType, type HostLookup } from "./photo.js";
 import type { PadiSession } from "./session.js";
+
+/** The file type by its first bytes (moved to photo.ts; still exported here). */
+export { sniffImageType };
 
 export type ApiMode = "proxy" | "direct" | "auto";
 
@@ -55,6 +60,8 @@ export interface PadiApiOptions {
   timeoutMs?: number;
   /** Backoff of the HTTP layer (tests use 0). */
   backoffMs?: number;
+  /** DNS lookup for the profile photo's host (tests). */
+  lookup?: HostLookup;
 }
 
 /** The eCard image on PADI's image CDN. */
@@ -143,16 +150,6 @@ export function photoIdsFrom(json: unknown): string[] {
     if (id) out.push(id);
   }
   return out;
-}
-
-/** The image type from the first bytes, when the server did not say. */
-export function sniffImageType(data: Buffer): string {
-  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
-  if (data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
-  if (data.length >= 6 && /^GIF8[79]a$/.test(data.subarray(0, 6).toString("latin1"))) return "image/gif";
-  if (data.length >= 12 && data.subarray(0, 4).toString("latin1") === "RIFF" && data.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
-  if (data.length >= 12 && data.subarray(4, 8).toString("latin1") === "ftyp" && /^(heic|heix|mif1|msf1)$/.test(data.subarray(8, 12).toString("latin1"))) return "image/heic";
-  return "application/octet-stream";
 }
 
 function num(value: unknown): number | null {
@@ -358,8 +355,12 @@ export class PadiApi implements LogbookBackend {
   // REST
   // -------------------------------------------------------------------------------------------
 
-  /** A GET with the bearer token; refreshes once on HTTP 401. */
-  private async get(url: string, what: string, headers: { affiliate: boolean; platform: boolean; accept?: string }): Promise<Response> {
+  /**
+   * A GET with the bearer token; refreshes once on HTTP 401. `noRedirect`: a redirect is not
+   * followed but answered as it is (an HTTP 3xx, so the caller's status check fails), so the
+   * headers never go to another host.
+   */
+  private async get(url: string, what: string, headers: { affiliate: boolean; platform: boolean; accept?: string; noRedirect?: boolean }): Promise<Response> {
     const session = this.opts.session;
     let refreshed = false;
     for (;;) {
@@ -369,7 +370,7 @@ export class PadiApi implements LogbookBackend {
       if (headers.platform) h["x-platform"] = "web";
       const res = await padiFetch(
         url,
-        { method: "GET", headers: h },
+        { method: "GET", headers: h, ...(headers.noRedirect ? { redirect: "manual" as const } : {}) },
         {
           ...(this.opts.fetch ? { fetch: this.opts.fetch } : {}),
           ...(this.opts.timeoutMs ? { timeoutMs: this.opts.timeoutMs } : {}),
@@ -432,6 +433,45 @@ export class PadiApi implements LogbookBackend {
     // The bytes win over the header when they are a known image (servers send "image/jpg" and the like).
     const sniffed = sniffImageType(data);
     return { data, mimeType: sniffed !== "application/octet-stream" || !type.startsWith("image/") ? sniffed : type };
+  }
+
+  async getProfilePhoto(opts: { note?: (reason: string) => void } = {}): Promise<ProfilePhoto | undefined> {
+    const note = opts.note ?? (() => undefined);
+    const base = this.opts.endpoints.photoUrl;
+    if (!base) {
+      note("no PADI photo address (the PADI addresses point to a test server)");
+      return undefined;
+    }
+    // Step 1: which photo. The PADI web app sends this with the affiliate-id header. A redirect
+    // is not followed (that header would go to the other host): it fails like an HTTP error.
+    const what = "The PADI photo service";
+    const res = await this.get(`${base}?status=approved`, what, { affiliate: true, platform: false, noRedirect: true });
+    const body = await readText(res);
+    if (!res.ok) throw statusError(what, res, body);
+    const json = parseJson(body);
+    // A page that is not JSON at all (an empty answer, a maintenance or firewall page) says
+    // nothing about the photo: the check failed, so the stored photo stays and is asked for again later.
+    if (json === undefined) throw new PadiHttpError("http", `${what} did not answer JSON.`);
+    const found = photoLinkFrom(json);
+    if ("none" in found) {
+      note(found.none);
+      return undefined;
+    }
+    // Step 2: the photo itself, from a storage host, without the token. An http photo address
+    // is the operator's local mock (tests): only then may the link be http or local.
+    try {
+      return await downloadProfilePhoto(found.link, {
+        allowLocal: new URL(base).protocol === "http:",
+        ...(this.opts.fetch ? { fetch: this.opts.fetch } : {}),
+        ...(this.opts.lookup ? { lookup: this.opts.lookup } : {}),
+      });
+    } catch (error) {
+      if (error instanceof PhotoLinkError && error.final) {
+        note(error.reason);
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   // -------------------------------------------------------------------------------------------

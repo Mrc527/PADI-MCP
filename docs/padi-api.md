@@ -46,6 +46,7 @@ All sample values on this page (ids, numbers, names, places) are invented.
 | `dive-log-service.global-prod.padi.com` | Instructor lookup `/instructor/{n}` used with the direct endpoint (web app) |
 | `logbook-images-api.padi.com` | Dive photos `/api/Image/*` (web app) |
 | `ecard.global-prod.padi.com` | eCards `/api/eCard/*` |
+| `api.padi.com` | Certification photo `/p/photos/web/certification` (web app), see 6.2 |
 | `account.padi.com` | The PADI sign-in pages |
 | `learning.padi.com` | The PADI web app (logbook pages) |
 
@@ -716,7 +717,31 @@ Fields seen:
   `https://res.cloudinary.com/padi/image/upload/f_auto/q_auto/f_auto/q_auto/CDN/global/ecards/<eCardStockID>.jpg`.
 - Without a token: HTTP 401 with an empty body.
 
-### 6.2 Others (web app, not used, not verified yet)
+### 6.2 Certification photo (web app, not verified yet)
+
+The picture in the top bar of the PADI website is the diver's **certification photo**, the photo
+on their eCards. The web app reads it with the same HTTP client as the logbook calls:
+
+```
+GET https://api.padi.com/p/photos/web/certification?status=approved
+Authorization: Bearer <ID token>
+affiliate-id: <custom:affiliate_id>
+```
+
+Answer (JSON): `{"preSignedURL":"https://...","status":"APPROVED","office":"..."}`.
+
+- `status` is `APPROVED` for an approved photo and `NO_PHOTO` when there is none. Other values
+  exist (a photo that waits for approval, or a rejected one); the web app reads them without
+  `?status=` to show the latest upload.
+- `preSignedURL` is a temporary link to the image on a storage host (probably cloud storage; the
+  host is not known). The web app shows it as `<img src=...>`, so the image itself is fetched
+  **without** the bearer token.
+- Upload: `POST https://api.padi.com/p/photos/web/certification/upload` (not used).
+
+What a real account answers (the exact status names, the storage host, the image format and
+size, how long the link lives) is **not verified yet** (Q19).
+
+### 6.3 Others (web app, not used, not verified yet)
 
 - `GET https://api.pro-prod.padi.com/certifications/me`: certifications (`items` with `certId`,
   `certName`, `credentialName`, `stockId`, ...).
@@ -777,6 +802,15 @@ per second. Serialise writes, and back off on HTTP 429 and 5xx.
   to the dive on learning.padi.com, where deleting also deletes the photos. If the photo service
   does not answer, the dive is deleted and the answer says so (`photos_checked: false`).
 - **Not done**: photos cannot be uploaded or deleted.
+- **Profile photo** (web service only, src/padi/photo.ts): step 1 as in 6.2 (`PADI_PHOTO_URL`).
+  A redirect of step 1 is not followed (it would carry the `affiliate-id` header to another
+  host). Only `APPROVED` with a `preSignedURL` string is a photo; any other JSON is "no photo".
+  An answer that is not JSON at all, like an HTTP error, is a failed check (asked again after an
+  hour; a stored photo stays). The link is fetched without any PADI header or token, only over
+  https on the standard port, only from a public address (the host is resolved and checked
+  first, and the connection goes to the checked address), with at most 2 redirects (each
+  checked again), 10 s and 2 MB. Only JPEG, PNG, GIF and WebP are kept, by the file's first
+  bytes. The link is never logged; errors name the host only.
 
 ---
 
@@ -819,3 +853,6 @@ title starting with `MCPTEST_`, and remove it afterwards.
 17. **Q17** `NoSurge`, `Nitrox` and `Heliox` are accepted by the API: how do the web and mobile
     apps show them?
 18. **Q18** The full answer of the instructor lookup, and what an unknown number returns.
+19. **Q19** Certification photo: does `api.padi.com` accept the Cognito ID token from our sign-in
+    paths (and need `affiliate-id`)? The exact `status` values, the storage host of
+    `preSignedURL`, the image format and size, and how long the link lives.

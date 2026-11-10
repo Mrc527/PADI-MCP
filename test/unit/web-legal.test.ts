@@ -253,14 +253,15 @@ describe("what the privacy policy states matches the code", () => {
     store.createSession(user.id, 14);
     store.issueTokens({ clientId: "client", userId: user.id, scopes: ["padi"], accessTtlMs: 60_000, refreshTtlMs: DAY });
     store.logActivity(user.id, "logbook_list_dives", true, 12, "client");
+    store.saveAvatar(user.id, { data: Buffer.from([0xff, 0xd8, 0xff, 0xe0]), type: "image/jpeg" });
     const code = store.createInvite(user.id, "", 7);
     expect(store.consumeInvite(code, "leaving@example.com")).toBe(true);
     const rows = (table: string) => Number((store.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?`).get(user.id) as { n: number }).n);
-    for (const table of ["sessions", "oauth_tokens", "activity"]) expect(rows(table), table).toBeGreaterThan(0);
+    for (const table of ["sessions", "oauth_tokens", "activity", "avatars"]) expect(rows(table), table).toBeGreaterThan(0);
 
     store.deleteUser(user.id);
     expect(store.getUser(user.id)).toBeUndefined();
-    for (const table of ["sessions", "oauth_tokens", "activity"]) expect(rows(table), table).toBe(0);
+    for (const table of ["sessions", "oauth_tokens", "activity", "avatars"]) expect(rows(table), table).toBe(0);
     // The invite keeps the address until the administrator deletes it, as the policy says.
     expect(store.listInvites().some((i) => i.usedBy === "leaving@example.com")).toBe(true);
     expect((await get("/privacy")).html).toContain("Deleting your account does not remove your email address from an invite you used");
@@ -271,9 +272,44 @@ describe("what the privacy policy states matches the code", () => {
     const user = store.createUser("removing@example.com", "x", false);
     store.savePadiSettings(user.id, { email: "leaving.diver@example.com", refreshToken: "rt-invented-leaving", loginMethod: "cognito", clientId: "test-client", affiliateId: "10000005", units: "auto", readOnly: false, connectedAt: Date.now() });
     expect(store.getUser(user.id)?.hasPadi).toBe(true);
+    store.saveAvatar(user.id, { data: Buffer.from([0xff, 0xd8, 0xff, 0xe0]), type: "image/jpeg" });
+    expect(store.getUser(user.id)?.avatarAt).toBeDefined();
     store.savePadiSettings(user.id, undefined);
     expect(store.getUser(user.id)?.hasPadi).toBe(false);
     expect(store.db.prepare("SELECT service_enc FROM users WHERE id = ?").get(user.id)).toEqual({ service_enc: null });
+    // The profile photo goes with the connection.
+    expect(store.getAvatar(user.id)).toBeUndefined();
+    expect(store.getUser(user.id)?.avatarAt).toBeUndefined();
+  });
+
+  it("keeps the profile photo only while the same PADI account is connected, as the policy says", async () => {
+    const { store } = web.ctx;
+    const user = store.createUser("photo-policy@example.com", "x", false);
+    const settings = { email: "photo.diver@example.com", refreshToken: "rt-invented-photo", loginMethod: "cognito" as const, clientId: "test-client", affiliateId: "10000007", units: "auto" as const, readOnly: false, connectedAt: Date.now() };
+    store.savePadiSettings(user.id, settings);
+    store.saveAvatar(user.id, { data: Buffer.from([0xff, 0xd8, 0xff, 0xe0]), type: "image/jpeg" });
+    // Signing in again to the same PADI account keeps it (it is checked again)...
+    store.savePadiSettings(user.id, { ...settings, refreshToken: "rt-invented-photo-2", connectedAt: Date.now() + 1 });
+    expect(store.getAvatar(user.id)).toBeDefined();
+    // ...another PADI account, or no photo at PADI any more, deletes it.
+    store.savePadiSettings(user.id, { ...settings, affiliateId: "10000008" });
+    expect(store.getAvatar(user.id)).toBeUndefined();
+    store.saveAvatar(user.id, { data: Buffer.from([0xff, 0xd8, 0xff, 0xe0]), type: "image/jpeg" });
+    store.saveAvatar(user.id, undefined);
+    expect(store.getAvatar(user.id)).toBeUndefined();
+    // Turning the account into a demo account deletes the connection and the photo.
+    store.saveAvatar(user.id, { data: Buffer.from([0xff, 0xd8, 0xff, 0xe0]), type: "image/jpeg" });
+    expect(store.setDemo(user.id, true)).toBe(true);
+    expect(store.getAvatar(user.id)).toBeUndefined();
+    store.deleteUser(user.id);
+    const { html } = await get("/privacy");
+    expect(html).toContain("<strong>Your profile photo.</strong> If your PADI account has an approved certification photo");
+    expect(html).toContain("<strong>PADI connection and profile photo:</strong> until you remove the connection on the PADI account page, connect another PADI account, or delete your account.");
+    expect(html).toContain("If your PADI account no longer has an approved photo, the copy is deleted at the next check.");
+    expect(html).toContain("your PADI connection, your profile photo, your sessions");
+    expect(html).toContain("sends no sign-in data there");
+    // The photo has a legal basis.
+    expect(html).toContain("that is your account, your PADI connection and profile photo, your connected apps and your activity log.");
   });
 
   it("stores the PADI connection encrypted and passwords, sessions and tokens only as hashes", async () => {
@@ -305,7 +341,7 @@ describe("what the privacy policy states matches the code", () => {
 
   it("has no place in the database for IP addresses or logbook content", () => {
     const tables = (web.ctx.store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]).map((t) => t.name);
-    expect(tables.sort()).toEqual(["activity", "invites", "oauth_clients", "oauth_codes", "oauth_pending", "oauth_tokens", "sessions", "settings", "users"]);
+    expect(tables.sort()).toEqual(["activity", "avatars", "invites", "oauth_clients", "oauth_codes", "oauth_pending", "oauth_tokens", "sessions", "settings", "users"]);
     for (const table of tables) {
       const columns = (web.ctx.store.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
       for (const column of columns) expect(`${table}.${column}`).not.toMatch(/(^|_)(ip|addr|address|subject|body|message|content|attachment|event|dive|dives|site|buddy)(_|$)/i);

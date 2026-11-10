@@ -96,6 +96,8 @@ a:hover { text-decoration: underline; }
 .avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; border-radius: 50%;
   background: linear-gradient(160deg, #6f7682, #545a64); color: #fff; font: 600 13px/1 var(--font); letter-spacing: .02em; }
 .avatar.xl { width: 64px; height: 64px; font-size: 24px; }
+.avatar.photo { background: var(--fill); overflow: hidden; }
+.avatar img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
 
 /* Brand mark and service icons */
 .mark { display: block; flex: none; border-radius: 22%; }

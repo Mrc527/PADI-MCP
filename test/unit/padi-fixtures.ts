@@ -15,6 +15,7 @@ export const ENDPOINTS: PadiEndpoints = {
   directInstructorUrl: "https://service.test/instructor",
   ecardUrl: "https://ecard.test/api/eCard",
   imagesUrl: "https://images.test/api/Image",
+  photoUrl: "https://photos.test/p/photos/web/certification",
   clientId: "testclient123",
 };
 

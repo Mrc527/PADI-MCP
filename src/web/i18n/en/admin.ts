@@ -174,7 +174,7 @@ export default {
   "admin.users.resetPassword": "Reset password",
   "admin.users.confirmResetPassword": "Generate a new temporary password for this user?",
   "admin.users.makeDemo": "Make demo account",
-  "admin.users.confirmMakeDemo": "Turn {email} into a demo account? Their PADI connection is deleted, and their connected apps see the sample logbook from now on.",
+  "admin.users.confirmMakeDemo": "Turn {email} into a demo account? Their PADI connection and profile photo are deleted, and their connected apps see the sample logbook from now on.",
   "admin.users.makeNormal": "Make normal account",
   "admin.users.confirmMakeNormal": "Turn {email} back into a normal account? The demo data is deleted, and they can connect their own PADI account.",
   "admin.users.delete": "Delete",

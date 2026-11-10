@@ -344,10 +344,22 @@ export interface LogbookBackend {
   listCertifications(): Promise<Certification[]>;
   listPhotoIds(logId: number): Promise<string[]>;
   getPhoto(logId: number, photoId: string): Promise<{ data: Buffer; mimeType: string }>;
+  /**
+   * The diver's profile photo: the approved photo on their certification cards, as the PADI
+   * website shows it (src/padi/photo.ts). undefined: there is none, or it cannot be used (`note`
+   * hears why). Throws when PADI could not be asked (try again later). Always undefined for the demo.
+   */
+  getProfilePhoto(opts?: { note?: (reason: string) => void }): Promise<ProfilePhoto | undefined>;
   /** From the token claims (no network for the demo). */
   account(): Promise<PadiAccount>;
   check(): Promise<BackendCheck>;
   close(): Promise<void>;
+}
+
+/** A profile photo: JPEG, PNG, GIF or WebP, by the file's first bytes. */
+export interface ProfilePhoto {
+  data: Buffer;
+  type: string;
 }
 
 export interface PadiAccount {

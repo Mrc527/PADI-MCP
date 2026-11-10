@@ -21,6 +21,7 @@ import type {
   LogbookBackend,
   LogType,
   PadiAccount,
+  ProfilePhoto,
   Units,
   WireLog,
   WireLogInsert,
@@ -721,6 +722,11 @@ export class DemoLogbookBackend implements LogbookBackend {
 
   async getPhoto(logId: number, photoId: string): Promise<{ data: Buffer; mimeType: string }> {
     throw new NotFoundError(`Photo ${photoId} of dive ${logId} was not found.`);
+  }
+
+  async getProfilePhoto(): Promise<ProfilePhoto | undefined> {
+    // "Alex Demo" has no photo, and nothing is ever fetched for a demo account.
+    return undefined;
   }
 
   async account(): Promise<PadiAccount> {

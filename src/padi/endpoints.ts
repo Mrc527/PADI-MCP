@@ -24,6 +24,12 @@ export interface PadiEndpoints {
   ecardUrl: string;
   /** Dive photos API base: GET <imagesUrl>/GetImageList/<logId>, <imagesUrl>/GetImage/<logId>/<imageId>. */
   imagesUrl: string;
+  /**
+   * The diver's certification photo (the profile photo of the PADI website): GET
+   * <photoUrl>?status=approved. Absent when the operator points the other PADI addresses
+   * somewhere else (a mock) but not this one: then the real PADI is never asked for a photo.
+   */
+  photoUrl?: string;
   /** Public Cognito app client (no secret). */
   clientId: string;
   /** AWS region of the Cognito user pool. */
@@ -39,6 +45,7 @@ export const DEFAULT_ENDPOINTS: Readonly<PadiEndpoints> = Object.freeze({
   directInstructorUrl: "https://dive-log-service.global-prod.padi.com/instructor",
   ecardUrl: "https://ecard.global-prod.padi.com/api/eCard",
   imagesUrl: "https://logbook-images-api.padi.com/api/Image",
+  photoUrl: "https://api.padi.com/p/photos/web/certification",
   clientId: "2arn5r23p0ugce89a5moe95v1l",
   region: "us-west-2",
 });
@@ -53,6 +60,7 @@ export const ENDPOINT_ENV: Readonly<Record<keyof PadiEndpoints, string>> = Objec
   directInstructorUrl: "PADI_DIRECT_INSTRUCTOR_URL",
   ecardUrl: "PADI_ECARD_URL",
   imagesUrl: "PADI_IMAGES_URL",
+  photoUrl: "PADI_PHOTO_URL",
   clientId: "PADI_CLIENT_ID",
   region: "PADI_COGNITO_REGION",
 });
@@ -68,6 +76,7 @@ const URL_KEYS: readonly UrlKey[] = [
   "directInstructorUrl",
   "ecardUrl",
   "imagesUrl",
+  "photoUrl",
 ];
 
 function checkUrl(name: string, value: string, keepTrailingSlash: boolean): string {
@@ -86,6 +95,8 @@ function checkUrl(name: string, value: string, keepTrailingSlash: boolean): stri
 /**
  * The endpoints with the operator's overrides from the environment. Without overrides, the
  * production PADI hosts. When only PADI_COGNITO_REGION is set, the Cognito URL follows the region.
+ * When other PADI addresses are overridden (a mock) but PADI_PHOTO_URL is not, there is no photo
+ * address, so nothing is sent to the real PADI.
  */
 export function endpointsFromEnv(env: Record<string, string | undefined> = process.env): PadiEndpoints {
   const get = (key: keyof PadiEndpoints) => env[ENDPOINT_ENV[key]]?.trim() || undefined;
@@ -104,12 +115,18 @@ export function endpointsFromEnv(env: Record<string, string | undefined> = proce
     // The Cognito endpoint is a full address (POST to it as it is); the others are bases.
     if (value) out[key] = checkUrl(ENDPOINT_ENV[key], value, key === "cognitoUrl");
   }
+  if (!get("photoUrl") && URL_KEYS.some((key) => get(key))) delete out.photoUrl;
   return out;
 }
 
-/** Names of the endpoints that differ from the production defaults (for diagnostics). */
+/**
+ * Names of the endpoints that differ from the production defaults (for diagnostics). A photo
+ * address left out because of other overrides is not one of them.
+ */
 export function customEndpoints(endpoints: PadiEndpoints): string[] {
-  return (Object.keys(DEFAULT_ENDPOINTS) as (keyof PadiEndpoints)[]).filter((key) => endpoints[key] !== DEFAULT_ENDPOINTS[key]).map((key) => ENDPOINT_ENV[key]);
+  return (Object.keys(DEFAULT_ENDPOINTS) as (keyof PadiEndpoints)[])
+    .filter((key) => endpoints[key] !== undefined && endpoints[key] !== DEFAULT_ENDPOINTS[key])
+    .map((key) => ENDPOINT_ENV[key]);
 }
 
 /** The environment variables of the endpoints that are set, for passing operator overrides on. */

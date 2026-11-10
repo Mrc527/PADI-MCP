@@ -17,7 +17,10 @@ import { Browser, connectMcp, setBase, TestOAuthClient } from "../helpers/web-cl
 
 const enabled = process.env.PADI_MCP_IT === "1";
 
-/** A second diver of the mock (invented). */
+/** The first diver's certification photo at the mock PADI (invented bytes of a JPEG). */
+const PHOTO = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("invented certification photo")]);
+
+/** A second diver of the mock (invented), without a certification photo. */
 const SECOND = { email: "lee.sample@example.com", password: "invented-password-3", affiliateId: "20000003", givenName: "Lee", familyName: "Sample" };
 
 let server: Server;
@@ -48,12 +51,12 @@ async function diver(email: string, padi: { email: string; password: string }): 
 
 describe.skipIf(!enabled)("web mode against a mock PADI API", () => {
   beforeAll(async () => {
-    mock = await startMockPadi({ accounts: [MOCK_ACCOUNT, SECOND] });
+    mock = await startMockPadi({ accounts: [{ ...MOCK_ACCOUNT, certificationPhoto: { status: "APPROVED", data: PHOTO } }, SECOND] });
     server = createServer();
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     setBase(base);
-    web = await createWebApp({ publicUrl: new URL(base), host: "127.0.0.1", port: 0, dataDir: ":memory:", operator: mock.env(), log: (m) => void logs.push(m) });
+    web = await createWebApp({ publicUrl: new URL(base), host: "127.0.0.1", port: 0, dataDir: ":memory:", operator: mock.env({ photo: true }), log: (m) => void logs.push(m) });
     server.on("request", web.app);
     // The first account is the administrator; the others sign up freely.
     expect((await new Browser().signup("admin@example.com", "correct horse battery")).status).toBe(303);
@@ -67,7 +70,13 @@ describe.skipIf(!enabled)("web mode against a mock PADI API", () => {
   });
 
   it("lets a signed-up user manage their own PADI logbook through Claude", async () => {
-    const { client } = await diver("river@example.com", MOCK_ACCOUNT);
+    const { browser, client } = await diver("river@example.com", MOCK_ACCOUNT);
+    // The certification photo of the PADI account is the user's picture on the pages.
+    const src = (await browser.page("/account")).html.match(/<img src="(\/account\/avatar\?v=\d+)"/)?.[1];
+    expect(src).toBeTruthy();
+    const photo = await browser.fetch(src!);
+    expect(photo.headers.get("content-type")).toBe("image/jpeg");
+    expect(Buffer.from(await photo.arrayBuffer()).equals(PHOTO)).toBe(true);
     const info = await call(client, "padi_account_info", { check: true });
     expect(info).toMatchObject({ affiliate_id: MOCK_ACCOUNT.affiliateId, read_only: false });
 
@@ -150,5 +159,10 @@ describe.skipIf(!enabled)("web mode against a mock PADI API", () => {
     }
     // ID tokens, and refresh tokens shaped like a JWT.
     expect(all).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}/);
+    // The pre-signed photo links are secrets too; the storage host never got a PADI token.
+    expect(mock.photoLinks.length).toBeGreaterThan(0);
+    for (const link of mock.photoLinks) expect(all.includes(new URL(link).searchParams.get("X-Amz-Signature")!)).toBe(false);
+    expect(all).toContain("No profile photo: no certification photo at PADI");
+    expect(mock.violations).toEqual([]);
   });
 });

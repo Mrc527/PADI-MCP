@@ -162,7 +162,7 @@ export default {
   "admin.users.resetPassword": "Reimposta password",
   "admin.users.confirmResetPassword": "Vuoi generare una nuova password temporanea per questo utente?",
   "admin.users.makeDemo": "Rendi account demo",
-  "admin.users.confirmMakeDemo": "Vuoi trasformare {email} in un account demo? Il suo collegamento con PADI verrà eliminato e da ora in poi le app collegate vedranno il logbook di esempio.",
+  "admin.users.confirmMakeDemo": "Vuoi trasformare {email} in un account demo? Il suo collegamento con PADI e la sua foto del profilo verranno eliminati e da ora in poi le app collegate vedranno il logbook di esempio.",
   "admin.users.makeNormal": "Rendi account normale",
   "admin.users.confirmMakeNormal": "Vuoi riportare {email} a un account normale? I dati demo verranno eliminati e l'utente potrà collegare il proprio account PADI.",
   "admin.users.delete": "Elimina",

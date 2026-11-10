@@ -89,6 +89,7 @@ export function legalRoutes(ctx: WebContext): Router {
           "legal.privacy.data.request",
           "legal.privacy.data.invite",
           "legal.privacy.data.padi",
+          "legal.privacy.data.photo",
           "legal.privacy.data.apps",
           "legal.privacy.data.activity",
           "legal.privacy.data.sessions",
