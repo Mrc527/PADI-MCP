@@ -44,6 +44,18 @@ describe("deploy files", () => {
     }
   });
 
+  it("publish no port of the service on the server: the proxy reaches it over a Docker network", () => {
+    const compose = read("deploy/server/compose.yml");
+    const service = compose.slice(compose.indexOf("\n  padi-mcp:"), compose.indexOf("\n  caddy:"));
+    expect(service).toContain("image: ${PADI_MCP_IMAGE");
+    expect(service).not.toMatch(/^\s+ports:/m);
+    // Only the answer "host" in setup-server.sh publishes one, in compose.override.yml.
+    const setup = read("deploy/server/setup-server.sh");
+    expect(setup).toContain('"${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"');
+    expect(setup).toContain("traefik.http.routers.padi-mcp.rule=Host(");
+    expect(read("deploy/server/.env.example")).not.toMatch(/^HOST_PORT=/m);
+  });
+
   it("ship no administrator password", () => {
     for (const path of ["deploy/.env.example", "deploy/server/.env.example"]) {
       const text = read(path);

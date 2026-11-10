@@ -12,9 +12,9 @@
 #   ./deploy.sh backup          save a consistent copy of the database
 #   docker compose logs -f      follow the logs
 #
-# To add your own settings (for example a Docker network shared with your reverse proxy),
-# create compose.override.yml here. Docker Compose loads it automatically and the pipeline
-# never touches it.
+# Your own settings (how the reverse proxy reaches the service, see below) go in
+# compose.override.yml here. Docker Compose loads it automatically and the pipeline never
+# touches it.
 name: padi-mcp
 
 services:
@@ -33,10 +33,12 @@ services:
       NOTIFY_FROM: ${NOTIFY_FROM:-}
       # Optional: PADI logbook API for every user: proxy (default), direct or auto.
       PADI_API_MODE: ${PADI_API_MODE:-}
-    # Only reachable from this machine by default: your reverse proxy forwards
-    # https://DOMAIN to 127.0.0.1:HOST_PORT.
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+    # No port is published on this machine. Your reverse proxy reaches the service in one of
+    # these ways (setup-server.sh writes the matching compose.override.yml):
+    #   - a proxy in Docker (Traefik, ...): on a Docker network shared with it, at padi-mcp:3000;
+    #   - a proxy installed on this machine (nginx, Caddy): compose.override.yml publishes
+    #     127.0.0.1:HOST_PORT;
+    #   - the bundled Caddy below (COMPOSE_PROFILES=caddy): on the default network.
     volumes:
       - data:/data
     read_only: true

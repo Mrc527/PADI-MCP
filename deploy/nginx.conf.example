@@ -1,8 +1,9 @@
 # Example nginx site for the web mode of MCP for PADI (TLS certificates managed separately,
 # e.g. certbot). Run the server with:
 #   PUBLIC_URL=https://padi-mcp.example.com TRUST_PROXY=1 node dist/index.js --web
-# With the Docker deploy (deploy/server), use the HOST_PORT of .env in proxy_pass (3000 unless
-# another service, such as MCP for iCloud, already uses that port on the same machine).
+# With the Docker deploy (deploy/server), the service gets a local port only when
+# compose.override.yml publishes one (setup-server.sh, answer "host"): use the HOST_PORT of .env
+# in proxy_pass (3000 unless another service already uses that port on the same machine).
 server {
     listen 443 ssl http2;
     server_name padi-mcp.example.com;

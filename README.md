@@ -118,7 +118,7 @@ Pull requests only run steps 1 and 2, and nothing is published. Deploys never ru
 
 **Shortcut for Ubuntu servers:** [deploy/server/setup-server.sh](deploy/server/setup-server.sh) does steps 1 to 3 and prepares the secrets for step 5. Copy it to the server (for example paste it into `nano setup-server.sh`), run `sudo bash setup-server.sh` and answer its questions. It writes the two GitHub secrets to a file only root can read and prints what to do next. You still need step 4 (reverse proxy and DNS) and to add the secrets in GitHub. The steps below explain what it does.
 
-**Sharing a server with MCP for iCloud.** Both services can run on the same machine (they do on `nebula.visin.ch`). They share the `deploy` user, but each has its own folder (`~/padi-mcp`), its own SSH key for GitHub, its own host name and its own local port. MCP for iCloud listens on `127.0.0.1:3000`, so give this service another port, for example `HOST_PORT=3001`. `setup-server.sh` offers the next free port by itself.
+**Sharing a server with MCP for iCloud.** Both services can run on the same machine (they do on `nebula.visin.ch`). They share the `deploy` user, but each has its own folder (`~/padi-mcp`), its own SSH key for GitHub and its own host name. With Traefik in Docker (as on `nebula.visin.ch`) neither service needs a port on the machine: Traefik reaches each one over a shared Docker network. Only a proxy installed on the machine itself (nginx, Caddy) needs a local port per service. `setup-server.sh` asks which case you have and writes the matching `compose.override.yml`.
 
 **1. Prepare the server.** Install Docker Engine with the Compose plugin ([instructions](https://docs.docker.com/engine/install/)). Then create a user that is only used for deploys (works on Ubuntu and Oracle Linux; skip this if the user exists already):
 
@@ -154,25 +154,15 @@ Start with this, using your own values:
 
 ```bash
 DOMAIN=padi.mcp.visin.ch
-HOST_PORT=3001
 ADMIN_EMAIL=you@example.com
 ADMIN_PASSWORD='a long password'
 ```
 
 Set both `ADMIN_EMAIL` and `ADMIN_PASSWORD`: the service is online as soon as the first deploy finishes, and without them the first person who signs up becomes the administrator. Put values that contain a `$` in single quotes. All other options (`MASTER_KEY`, `TRUST_PROXY`, `SMTP_URL`, ...) are explained in [deploy/server/.env.example](deploy/server/.env.example); each deploy copies that file next to `.env` and only changes the `PADI_MCP_IMAGE` line of `.env`. `DOMAIN` needs a DNS record pointing to the server, and Claude needs `https://DOMAIN` on port 443 with a valid certificate.
 
-**4. Point your reverse proxy at the service.** The service listens on `127.0.0.1:HOST_PORT` on the server (3000 by default). Give it its own host name (for example `padi.mcp.visin.ch`, a DNS record for the same server) and add a site for it to the proxy that already runs there:
+**4. Point your reverse proxy at the service.** Give it its own host name (for example `padi.mcp.visin.ch`, a DNS record for the same server). `compose.yml` publishes no port on the server: how the proxy reaches the service goes in a `compose.override.yml` next to `compose.yml` on the server. Docker Compose loads it by itself, and the pipeline never touches it. `setup-server.sh` writes it for you; these are the cases:
 
-- **nginx**: see [deploy/nginx.conf.example](deploy/nginx.conf.example).
-- **Caddy**:
-
-  ```
-  padi.mcp.visin.ch {
-      reverse_proxy 127.0.0.1:3001
-  }
-  ```
-
-- **A proxy that runs in Docker** (Traefik, Nginx Proxy Manager, ...): inside that container, `127.0.0.1` is the container itself. Put both on the same Docker network with a `compose.override.yml` next to `compose.yml` on the server (the pipeline never touches it), and forward to `http://padi-mcp:3000` (inside the Docker network the port is always 3000):
+- **A proxy that runs in Docker** (Traefik, Nginx Proxy Manager, ...): no port is needed. Put both on the same Docker network and forward to `http://padi-mcp:3000` (inside the Docker network the port is always 3000):
 
   ```yaml
   services:
@@ -204,6 +194,23 @@ Set both `ADMIN_EMAIL` and `ADMIN_PASSWORD`: the service is online as soon as th
   ```
 
   After creating or changing the file, run `docker compose up -d` in that folder as the deploy user.
+
+- **A proxy installed on the server** (nginx, Caddy): publish a local port with this `compose.override.yml`, and set `HOST_PORT` in `.env` (3000 by default; each service on the machine needs its own):
+
+  ```yaml
+  services:
+    padi-mcp:
+      ports:
+        - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+  ```
+
+  Then point the proxy at `127.0.0.1:HOST_PORT`: for nginx see [deploy/nginx.conf.example](deploy/nginx.conf.example); for Caddy:
+
+  ```
+  padi.mcp.visin.ch {
+      reverse_proxy 127.0.0.1:3001
+  }
+  ```
 
 - **No proxy on the server**: add `COMPOSE_PROFILES=caddy` to `.env`. The bundled Caddy then answers on ports 80 and 443 and gets a Let's Encrypt certificate by itself. Only one service on a machine can do this: if MCP for iCloud uses its bundled Caddy already, use a shared proxy instead.
 

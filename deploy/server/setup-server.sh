@@ -6,12 +6,15 @@
 #
 # It creates:
 #   - the user "deploy" (member of the docker group) with an SSH key that only GitHub uses,
-#   - the settings file /home/deploy/padi-mcp/.env (it asks for the administrator account and
-#     the local port; when 3000 is taken, for example by MCP for iCloud, it offers the next one),
+#   - the settings file /home/deploy/padi-mcp/.env (it asks for the administrator account),
+#   - /home/deploy/padi-mcp/compose.override.yml, which tells Docker how your reverse proxy
+#     reaches the service. With Traefik in Docker (it finds the network and the settings of the
+#     containers Traefik already routes) no port is published on this machine; only a proxy
+#     installed on the machine itself (nginx, Caddy) needs a local port,
 #   - /root/padi-mcp-github-secrets.txt with the two GitHub secrets and the encryption key.
 # At the end it prints a few facts about Docker on this server (no secrets) to send to Claude.
 #
-# Running it again is safe: an existing user, key or .env is kept as it is.
+# Running it again is safe: an existing user, key, .env or compose.override.yml is kept as it is.
 
 # Started with "sh"? Run again with bash, which this script needs.
 if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
@@ -53,19 +56,64 @@ command -v openssl >/dev/null 2>&1 || die "openssl is missing (sudo apt-get inst
 
 home="/home/$DEPLOY_USER"
 app="$home/padi-mcp"
+override="$app/compose.override.yml"
 
 say "Questions"
 ask SSH_HOST "Host name GitHub uses to reach this server over SSH" "nebula.visin.ch"
 ask DOMAIN "Public host name of the PADI service" "padi.mcp.visin.ch"
 [[ $SSH_HOST =~ ^[A-Za-z0-9.-]+$ ]] || die "not a host name: $SSH_HOST"
 [[ $DOMAIN =~ ^[A-Za-z0-9.-]+$ ]] || die "not a host name: $DOMAIN"
-if [ -f "$app/.env" ]; then
-  HOST_PORT=$(sed -n 's/^HOST_PORT=\([0-9]*\)$/\1/p' "$app/.env" | tail -n 1)
-  HOST_PORT=${HOST_PORT:-3000}
-else
-  ask HOST_PORT "Local port of the service (your reverse proxy forwards to it)" "$(free_port "$HOST_PORT")"
-  [[ $HOST_PORT =~ ^[0-9]{1,5}$ ]] && [ "$HOST_PORT" -ge 1024 ] && [ "$HOST_PORT" -le 65535 ] ||
-    die "not a port from 1024 to 65535: $HOST_PORT"
+# How the reverse proxy reaches the service. Kept as it is when compose.override.yml exists or
+# .env starts the bundled Caddy.
+PROXY=kept
+if [ ! -f "$override" ] && ! grep -qs '^COMPOSE_PROFILES=.*caddy' "$app/.env"; then
+  # Traefik in Docker, and a container it already routes (for example MCP for iCloud): their
+  # network, entrypoint and certificate resolver are the suggested answers.
+  traefik=$(docker ps --format '{{.ID}} {{.Image}}' | awk '$2 ~ /(^|\/)traefik(:|@|$)/ { print $1; exit }')
+  routed=$(docker ps -q --filter label=traefik.enable=true | head -n 1)
+  labels=""
+  if [ -n "$routed" ]; then
+    labels=$(docker inspect --format '{{range $k, $v := .Config.Labels}}{{$k}}={{$v}}{{"\n"}}{{end}}' "$routed")
+  fi
+  router_label() { printf '%s\n' "$labels" | sed -n "s/^traefik\.http\.routers\.[^.=]*\.$1=//p" | head -n 1; }
+  net_default=$(printf '%s\n' "$labels" | sed -n 's/^traefik\.docker\.network=//p' | head -n 1)
+  if [ -z "$net_default" ] && [ -n "$traefik" ]; then
+    net_default=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "$traefik" | grep -vxE 'bridge|host|none' | head -n 1 || true)
+  fi
+  entrypoint_default=$(router_label entrypoints)
+  resolver_default=$(router_label 'tls\.certresolver')
+
+  echo
+  echo "How does your reverse proxy reach the service?"
+  echo "  traefik  Traefik runs in Docker on this machine: shared Docker network, no port"
+  echo "  host     nginx or Caddy installed on this machine: the service gets a local port"
+  echo "  caddy    no proxy yet: the bundled Caddy serves HTTPS (needs ports 80 and 443)"
+  ask PROXY "Your choice" "$([ -n "$traefik" ] && echo traefik || echo host)"
+  case $PROXY in
+    traefik)
+      ask PROXY_NETWORK "Docker network Traefik uses" "$net_default"
+      [[ $PROXY_NETWORK =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "not a Docker network name: $PROXY_NETWORK"
+      docker network inspect "$PROXY_NETWORK" >/dev/null 2>&1 || die "there is no Docker network $PROXY_NETWORK (docker network ls lists them)"
+      ask ENTRYPOINT "Traefik entrypoint for HTTPS" "${entrypoint_default:-websecure}"
+      [[ $ENTRYPOINT =~ ^[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*$ ]] || die "not an entrypoint name: $ENTRYPOINT"
+      ask CERTRESOLVER "Traefik certificate resolver (empty: Traefik's default certificate)" "$resolver_default"
+      [[ -z $CERTRESOLVER || $CERTRESOLVER =~ ^[A-Za-z0-9_-]+$ ]] || die "not a certificate resolver name: $CERTRESOLVER"
+      ;;
+    host)
+      if [ -f "$app/.env" ]; then
+        HOST_PORT=$(sed -n 's/^HOST_PORT=\([0-9]*\)$/\1/p' "$app/.env" | tail -n 1)
+        HOST_PORT=${HOST_PORT:-3000}
+      else
+        ask HOST_PORT "Local port of the service (your reverse proxy forwards to it)" "$(free_port "$HOST_PORT")"
+      fi
+      [[ $HOST_PORT =~ ^[0-9]{1,5}$ ]] && [ "$HOST_PORT" -ge 1024 ] && [ "$HOST_PORT" -le 65535 ] ||
+        die "not a port from 1024 to 65535: $HOST_PORT"
+      ;;
+    caddy) ;;
+    *) die "answer traefik, host or caddy" ;;
+  esac
+fi
+if [ ! -f "$app/.env" ]; then
   ask ADMIN_EMAIL "Administrator e-mail (to sign in to the service)"
   [[ $ADMIN_EMAIL =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die "not an e-mail address: $ADMIN_EMAIL"
   while :; do
@@ -124,16 +172,65 @@ else
   cat >"$app/.env" <<EOF
 # Settings for the MCP for PADI service (see .env.example after the first deploy).
 DOMAIN=$DOMAIN
-HOST_PORT=$HOST_PORT
 TRUST_PROXY=1
 ADMIN_EMAIL=$ADMIN_EMAIL
 ADMIN_PASSWORD='$ADMIN_PASSWORD'
 MASTER_KEY=$master_key
 EOF
+  if [ "$PROXY" = host ]; then echo "HOST_PORT=$HOST_PORT" >>"$app/.env"; fi
+  if [ "$PROXY" = caddy ]; then echo "COMPOSE_PROFILES=caddy" >>"$app/.env"; fi
   echo "Created it."
+fi
+if [ "$PROXY" = caddy ] && ! grep -q '^COMPOSE_PROFILES=.*caddy' "$app/.env"; then
+  echo "Add COMPOSE_PROFILES=caddy to $app/.env to start the bundled Caddy."
 fi
 chown "$DEPLOY_USER:$DEPLOY_USER" "$app/.env"
 chmod 600 "$app/.env"
+
+say "Reverse proxy: $override"
+if [ "$PROXY" = kept ]; then
+  echo "Already set up (compose.override.yml, or the bundled Caddy in .env): not changed."
+elif [ "$PROXY" = traefik ]; then
+  {
+    echo "# Written by setup-server.sh. Traefik (in Docker) routes https://$DOMAIN to the service"
+    echo "# over the Docker network $PROXY_NETWORK. No port is published on this machine."
+    echo "services:"
+    echo "  padi-mcp:"
+    echo "    networks: [default, proxy]"
+    echo "    labels:"
+    echo "      - traefik.enable=true"
+    echo "      - traefik.docker.network=$PROXY_NETWORK"
+    echo "      - traefik.http.routers.padi-mcp.rule=Host(\`$DOMAIN\`)"
+    echo "      - traefik.http.routers.padi-mcp.entrypoints=$ENTRYPOINT"
+    if [ -n "$CERTRESOLVER" ]; then
+      echo "      - traefik.http.routers.padi-mcp.tls.certresolver=$CERTRESOLVER"
+    else
+      echo "      - traefik.http.routers.padi-mcp.tls=true"
+    fi
+    echo "      - traefik.http.services.padi-mcp.loadbalancer.server.port=3000"
+    echo "networks:"
+    echo "  proxy:"
+    echo "    external: true"
+    echo "    name: $PROXY_NETWORK"
+  } >"$override"
+  echo "Created it: Traefik on network $PROXY_NETWORK, entrypoint $ENTRYPOINT${CERTRESOLVER:+, certificate resolver $CERTRESOLVER}."
+elif [ "$PROXY" = host ]; then
+  cat >"$override" <<'EOF'
+# Written by setup-server.sh. The reverse proxy on this machine forwards https://DOMAIN to
+# 127.0.0.1:HOST_PORT (HOST_PORT and BIND_ADDRESS are set in .env).
+services:
+  padi-mcp:
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+EOF
+  echo "Created it: the service listens on 127.0.0.1:$HOST_PORT."
+else
+  echo "Not needed: the bundled Caddy reaches the service over the stack's own network."
+fi
+if [ -f "$override" ]; then
+  chown "$DEPLOY_USER:$DEPLOY_USER" "$override"
+  chmod 640 "$override"
+fi
 
 say "GitHub secrets"
 port=$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }') || true
@@ -183,13 +280,17 @@ echo "--- containers"
 docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'
 echo "--- networks"
 docker network ls --format 'table {{.Name}}\t{{.Driver}}'
-echo "--- port $HOST_PORT"
-if ! command -v ss >/dev/null 2>&1; then
-  echo "could not check (ss is missing)"
-elif ss -ltn "sport = :$HOST_PORT" | grep -q LISTEN; then
-  echo "port $HOST_PORT is in use"
-else
-  echo "port $HOST_PORT is free"
+echo "--- proxy: $PROXY"
+if [ "$PROXY" = traefik ]; then
+  echo "traefik network: $PROXY_NETWORK"
+elif [ "$PROXY" = host ]; then
+  if ! command -v ss >/dev/null 2>&1; then
+    echo "port $HOST_PORT: could not check (ss is missing)"
+  elif ss -ltn "sport = :$HOST_PORT" | grep -q LISTEN; then
+    echo "port $HOST_PORT is in use"
+  else
+    echo "port $HOST_PORT is free"
+  fi
 fi
 echo "--- ssh port: $port"
 echo "--- end of facts"
@@ -197,5 +298,10 @@ echo "--- end of facts"
 say "Next steps"
 echo "1. sudo cat $SECRETS_FILE   and add the secrets in GitHub, then: sudo rm $SECRETS_FILE"
 echo "2. Add a DNS record: A $DOMAIN -> this server's public IP address."
-echo "3. Point your reverse proxy at http://127.0.0.1:$HOST_PORT for $DOMAIN (see README.md)."
+case $PROXY in
+  traefik) echo "3. Nothing to do on the proxy: Traefik routes $DOMAIN as soon as the first deploy starts the service." ;;
+  host) echo "3. Point your reverse proxy at http://127.0.0.1:$HOST_PORT for $DOMAIN (see README.md)." ;;
+  caddy) echo "3. The bundled Caddy gets a certificate for $DOMAIN on the first deploy (ports 80 and 443 must be free)." ;;
+  *) echo "3. Your reverse proxy setup is kept as it was." ;;
+esac
 echo "4. Send the 'Facts for Claude' part above to Claude."
