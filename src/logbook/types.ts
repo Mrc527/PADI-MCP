@@ -317,6 +317,27 @@ export interface BackendCheck {
   error?: string;
   dives?: number;
   apiMode?: string;
+  /** With compareModes: the same reads on the other PADI logbook address (diagnosis only). */
+  otherApi?: OtherApiCheck;
+}
+
+/**
+ * Read-only reads on the PADI logbook address that is not in use (direct when the server uses the
+ * proxy, and the other way round), compared with the address in use. Nothing is written and the
+ * server does not switch.
+ */
+export interface OtherApiCheck {
+  apiMode: "proxy" | "direct";
+  ok: boolean;
+  /** Each read: "same", "different" (it worked, but the answer differs) or the error. */
+  reads: Record<"count" | "list" | "dive" | "units", string>;
+  dives?: number;
+  error?: string;
+}
+
+export interface CheckOptions {
+  /** Also try the other PADI logbook address, read-only (padi_account_info with check=true). */
+  compareModes?: boolean;
 }
 
 /** Raw operations against PADI (or the demo). No validation, no unit conversion. */
@@ -352,7 +373,7 @@ export interface LogbookBackend {
   getProfilePhoto(opts?: { note?: (reason: string) => void }): Promise<ProfilePhoto | undefined>;
   /** From the token claims (no network for the demo). */
   account(): Promise<PadiAccount>;
-  check(): Promise<BackendCheck>;
+  check(opts?: CheckOptions): Promise<BackendCheck>;
   close(): Promise<void>;
 }
 

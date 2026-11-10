@@ -305,16 +305,21 @@ describe.skipIf(!enabled)("against a mock PADI API", () => {
       const info = await call(client, "padi_account_info", { check: true });
       expect(info).toMatchObject({ name: "River Tester", email: MOCK_ACCOUNT.email, affiliate_id: MOCK_ACCOUNT.affiliateId, demo: false, api_mode: "proxy" });
       expect(info.check).toMatchObject({ ok: true, dives: 25 });
+      // check also tries the direct address, read-only, with the same answers.
+      expect((info.check as { otherApi?: unknown }).otherApi).toEqual({ apiMode: "direct", ok: true, reads: { count: "same", list: "same", dive: "same", units: "same" }, dives: 25 });
       const signIns = requests().filter((r) => r.path.startsWith("/cognito") && r.body.includes("USER_PASSWORD_AUTH"));
       expect(signIns).toHaveLength(1);
       expect(JSON.parse(signIns[0]!.body).AuthParameters.USERNAME).toBe(MOCK_ACCOUNT.email);
-      // Every logbook request carries the ID token, the affiliate id and x-platform.
+      // Every logbook request carries the ID token and x-platform; the affiliate id only on the
+      // proxy (the direct address takes it from the token, and the mock flags it there).
       const gql = mock.graphql.slice(firstGql);
-      expect(gql.length).toBeGreaterThan(0);
+      expect(gql.filter((g) => g.mode === "proxy").length).toBeGreaterThan(0);
+      expect(gql.filter((g) => g.mode === "direct").length).toBeGreaterThan(0);
       for (const g of gql) {
         expect(String(g.headers.authorization)).toMatch(/^Bearer eyJ/);
-        expect(g.headers["affiliate-id"]).toBe(MOCK_ACCOUNT.affiliateId);
+        expect(g.headers["affiliate-id"]).toBe(g.mode === "proxy" ? MOCK_ACCOUNT.affiliateId : undefined);
         expect(g.headers["x-platform"]).toBe("web");
+        expect(g.query).not.toMatch(/mutation/i);
       }
       expect(mock.violations).toEqual([]);
     });

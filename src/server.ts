@@ -299,7 +299,7 @@ async function accountInfo(config: AppConfig, services: Services, check: boolean
     if (signInError !== undefined) {
       info.check = { ok: false, error: signInError };
     } else {
-      const result = await logbook.check().catch((error: unknown) => ({ ok: false, error: describeError(error) }));
+      const result = await logbook.check({ compareModes: true }).catch((error: unknown) => ({ ok: false, error: describeError(error) }));
       info.check = "error" in result && typeof result.error === "string" ? { ...result, error: redact(result.error, config.secrets) } : result;
     }
   }
@@ -337,7 +337,7 @@ export function createMcpServer(config: AppConfig, services: Services, log: (m: 
       title: "PADI account info",
       description:
         "Show the connected PADI account (name, e-mail, PADI affiliate id), the units (the server setting and the PADI logbook setting), whether the account is read-only, the API mode, whether it is a demo account, the server's date (today, in time_zone; the user's own date can differ by a day) and the server version. " +
-        "With check=true it also tests the connection to PADI and counts the dives; it then answers even when the PADI sign-in fails (connected false, the error in check).",
+        "With check=true it also tests the connection to PADI and counts the dives; it then answers even when the PADI sign-in fails (connected false, the error in check). check also tries the same reads, read-only, on PADI's other logbook address (check.otherApi), to see whether it would work too; the server keeps using its own.",
       inputSchema: { check: z.boolean().optional().describe("Also test the connection to PADI and count the dives") },
       kind: "read",
     },

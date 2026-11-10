@@ -7,6 +7,8 @@
 
 import type {
   BackendCheck,
+  CheckOptions,
+  OtherApiCheck,
   Certification,
   ChildTable,
   DiveSite,
@@ -170,6 +172,12 @@ function normaliseLog(row: unknown): WireLog | undefined {
 function rows(data: unknown, field: string): unknown[] {
   const list = (data as Record<string, unknown> | null | undefined)?.[field];
   return Array.isArray(list) ? list : [];
+}
+
+/** A check's error for the answer: a user-facing message as it is, anything else with "Error:". */
+function checkMessage(error: unknown): string {
+  const message = error instanceof UserFacingError ? error.message : `Error: ${(error as Error)?.message ?? String(error)}`;
+  return redact(message, []);
 }
 
 /** The columns that never go into an update's _set. */
@@ -494,13 +502,50 @@ export class PadiApi implements LogbookBackend {
     };
   }
 
-  async check(): Promise<BackendCheck> {
+  async check(opts: CheckOptions = {}): Promise<BackendCheck> {
     try {
       const dives = await this.countLogs();
-      return { ok: true, dives, apiMode: this.gql.describeMode() };
+      const result: BackendCheck = { ok: true, dives, apiMode: this.gql.describeMode() };
+      if (opts.compareModes) result.otherApi = await this.checkOtherApi(dives);
+      return result;
     } catch (error) {
-      const message = error instanceof UserFacingError ? error.message : `Error: ${(error as Error)?.message ?? String(error)}`;
-      return { ok: false, error: redact(message, []), apiMode: this.gql.describeMode() };
+      return { ok: false, error: checkMessage(error), apiMode: this.gql.describeMode() };
+    }
+  }
+
+  /**
+   * The same reads on the other logbook address, with the same sign-in, compared with the address
+   * in use: the dive count, the first dives of the list, the newest dive in full and the units
+   * setting. A second client in a fixed mode does it, so this server never switches and nothing
+   * is written. A refusal there can refresh the shared token once, as any 401 does.
+   */
+  private async checkOtherApi(dives: number): Promise<OtherApiCheck> {
+    const apiMode = this.gql.mode === "direct" ? "proxy" : "direct";
+    const other = new PadiApi({ ...this.opts, apiMode });
+    const reads: OtherApiCheck["reads"] = { count: "not tried", list: "not tried", dive: "not tried", units: "not tried" };
+    const same = (a: unknown, b: unknown) => (JSON.stringify(a) === JSON.stringify(b) ? "same" : "different");
+    let step: keyof OtherApiCheck["reads"] = "count";
+    try {
+      const otherDives = await other.countLogs();
+      reads.count = same(otherDives, dives);
+      step = "list";
+      const q = { limit: 3, offset: 0, withDepthTime: true } as ListQuery;
+      const [mine, theirs] = await Promise.all([this.listLogs(q), other.listLogs(q)]);
+      reads.list = same(mine, theirs);
+      step = "dive";
+      const first = mine[0]?.id;
+      if (first === undefined) reads.dive = "no dive to compare";
+      else reads.dive = same(await this.getLog(first), await other.getLog(first));
+      step = "units";
+      reads.units = same(await this.getUnits(), await other.getUnits());
+      const ok = Object.values(reads).every((r) => r === "same" || r === "no dive to compare");
+      this.opts.log?.(`PADI ${apiMode} API check: ${ok ? "same answers" : JSON.stringify(reads)}`);
+      return { apiMode, ok, reads, dives: otherDives };
+    } catch (error) {
+      const message = checkMessage(error);
+      reads[step] = message;
+      this.opts.log?.(`PADI ${apiMode} API check failed at ${step}: ${message}`);
+      return { apiMode, ok: false, reads, error: message };
     }
   }
 

@@ -539,7 +539,7 @@ The AI sees these tools (write tools are hidden in read-only mode). Every tool h
 
 | Tool | Kind | What it does |
 | --- | --- | --- |
-| `padi_account_info` | read | Name, e-mail, PADI affiliate id, units, read-only, API mode, demo flag, server version and today's date. `check=true` also tests the connection and counts the dives. |
+| `padi_account_info` | read | Name, e-mail, PADI affiliate id, units, read-only, API mode, demo flag, server version and today's date. `check=true` also tests the connection and counts the dives, and tries the same reads, read-only, on PADI's other logbook address (`check.otherApi`: does the direct address work too?). |
 | `logbook_list_dives` | read | Dives, newest first: `limit` 1-100 (15), `offset`, `log_type`, `status`, `sort` (date, max_depth, bottom_time), `from`, `to`, `query` (text in title, location or buddies), `units`. Sorted by depth or time, the largest come first and dives without a value last. Returns the total and the next offset. |
 | `logbook_get_dive` | read | Every detail of one dive, in the units you want, plus a link to edit it on learning.padi.com. |
 | `logbook_stats` | read | Number of dives, total bottom time, deepest, longest, average depth and time, first and last dive; `from`, `to`, `group_by` (none, year, month, location, dive_type, log_type). |

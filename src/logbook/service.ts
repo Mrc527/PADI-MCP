@@ -46,6 +46,7 @@ import {
 } from "./mapping.js";
 import type {
   BackendCheck,
+  CheckOptions,
   Certification,
   Dive,
   DiveInput,
@@ -1060,8 +1061,8 @@ export class LogbookService {
     return this.backend.account();
   }
 
-  async check(): Promise<CheckResult> {
-    return this.backend.check();
+  async check(opts: CheckOptions = {}): Promise<CheckResult> {
+    return this.backend.check(opts);
   }
 
   // -------------------------------------------------------------------------------------------
