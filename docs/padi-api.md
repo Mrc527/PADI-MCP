@@ -22,8 +22,13 @@ Labels used below:
 **Confirmed with a real account (hosted service, 2026-11-10):** sign-in with Cognito
 `USER_PASSWORD_AUTH` (client `2arn5r23p0ugce89a5moe95v1l`) and renewal of the ID token with the
 stored refresh token; the legacy proxy `/api/Logbook` with that token for reading (count, list with
-depth and time, units setting); the certification photo (6.2). Writes and the direct endpoint are
-still untested against the live service.
+depth and time, units setting); creating and changing dives through the proxy (the dives read back
+complete); the certification photo (6.2). The **direct endpoint** (`divelog.global-prod.padi.com/v1/graphql`)
+also accepts that same token (client `2arn5r23p0ugce89a5moe95v1l`, not only the website's
+`7l7c6...`): the dive count, the list, one full dive and the units setting gave exactly the same
+answers as the proxy (`padi_account_info` with `check=true`, `check.otherApi`). Still untested on
+the live service: deleting a dive, submitting one for verification, and any write on the direct
+endpoint.
 
 All sample values on this page (ids, numbers, names, places) are invented.
 
@@ -798,7 +803,8 @@ per second. Serialise writes, and back off on HTTP 429 and 5xx.
   the PADI auth API is saved.
 - **Transport** (`PADI_API_MODE`): `proxy` (default), `direct`, or `auto` (proxy first; switch to
   direct after two proxy answers of 404, 410 or 5xx in a row, or a 401 right after a refresh).
-  Direct mode is **not verified yet** against the live service.
+  Direct mode reads are verified against the live service (same answers as the proxy); writes in
+  direct mode are **not verified yet**.
 - **Writes**: one at a time per user; read, merge and write on updates; missing child rows are
   inserted; delete is the single ordered mutation; locked dives are refused; a dive is sent for
   verification only after the instructor lookup found the Pro.
