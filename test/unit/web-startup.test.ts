@@ -36,10 +36,11 @@ describe("the administrator from ADMIN_EMAIL and ADMIN_PASSWORD", () => {
 });
 
 describe("deploy files", () => {
-  it("pass PADI_API_MODE to the service and name the Compose project", () => {
+  it("pass PADI_API_MODE to the service (auto by default) and name the Compose project", () => {
     for (const path of ["deploy/docker-compose.yml", "deploy/server/compose.yml"]) {
       const compose = read(path);
-      expect(compose, path).toContain("PADI_API_MODE: ${PADI_API_MODE:-}");
+      // auto by default: the proxy, and the direct address if the proxy stops working.
+      expect(compose, path).toContain("PADI_API_MODE: ${PADI_API_MODE:-auto}");
       expect(compose, path).toMatch(/^name: padi-mcp$/m);
     }
   });

@@ -24,8 +24,9 @@ services:
       # Optional: e-mails to administrators about access requests (your own SMTP server).
       SMTP_URL: ${SMTP_URL:-}
       NOTIFY_FROM: ${NOTIFY_FROM:-}
-      # Optional: PADI logbook API for every user: proxy (default), direct or auto.
-      PADI_API_MODE: ${PADI_API_MODE:-}
+      # PADI logbook API for every user. auto (the default here): the proxy, and PADI's direct
+      # address if the proxy stops working. Set proxy or direct in .env to fix one.
+      PADI_API_MODE: ${PADI_API_MODE:-auto}
     volumes:
       - data:/data
 

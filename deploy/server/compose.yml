@@ -31,8 +31,9 @@ services:
       # Optional: SMTP server for e-mails to administrators about access requests.
       SMTP_URL: ${SMTP_URL:-}
       NOTIFY_FROM: ${NOTIFY_FROM:-}
-      # Optional: PADI logbook API for every user: proxy (default), direct or auto.
-      PADI_API_MODE: ${PADI_API_MODE:-}
+      # PADI logbook API for every user. auto (the default here): the proxy, and PADI's direct
+      # address if the proxy stops working. Set proxy or direct in .env to fix one.
+      PADI_API_MODE: ${PADI_API_MODE:-auto}
     # No port is published on this machine. Your reverse proxy reaches the service in one of
     # these ways (setup-server.sh writes the matching compose.override.yml):
     #   - a proxy in Docker (Traefik, ...): on a Docker network shared with it, at padi-mcp:3000;
