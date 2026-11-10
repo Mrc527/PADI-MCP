@@ -71,7 +71,11 @@ preflight() {
   docker info >/dev/null 2>&1 || die "cannot reach the Docker daemon. Is the user $(id -un) in the docker group?"
   docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is missing (install the docker-compose-plugin package)"
   [ -f compose.yml ] || die "compose.yml is missing in $PWD"
-  [ -f .env ] || die "$PWD/.env does not exist. Create it from .env.example (set DOMAIN), then deploy again."
+  [ -f .env ] || die "$PWD/.env does not exist. Run setup-server.sh on this server once (see 'One-time setup' in README.md), or create .env from .env.example (set DOMAIN), then deploy again."
+  # compose.yml publishes no port: compose.override.yml (or the bundled Caddy) connects the proxy.
+  if [ ! -f compose.override.yml ] && [ -z "${COMPOSE_FILE:-}" ] && ! grep -qsE '^(COMPOSE_FILE=|COMPOSE_PROFILES=.*caddy)' .env; then
+    log "warning: there is no compose.override.yml, so your reverse proxy cannot reach the service. Run setup-server.sh (or see step 4 of 'One-time setup' in README.md)."
+  fi
   mkdir -p "$STATE_DIR"
 }
 
