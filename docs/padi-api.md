@@ -19,6 +19,12 @@ Labels used below:
   project has not seen it work yet.
 - **not verified yet**: a guess, or something that only one tool did. Treat with care.
 
+**Confirmed with a real account (hosted service, 2026-11-10):** sign-in with Cognito
+`USER_PASSWORD_AUTH` (client `2arn5r23p0ugce89a5moe95v1l`) and renewal of the ID token with the
+stored refresh token; the legacy proxy `/api/Logbook` with that token for reading (count, list with
+depth and time, units setting); the certification photo (6.2). Writes and the direct endpoint are
+still untested against the live service.
+
 All sample values on this page (ids, numbers, names, places) are invented.
 
 ## Contents
@@ -717,7 +723,7 @@ Fields seen:
   `https://res.cloudinary.com/padi/image/upload/f_auto/q_auto/f_auto/q_auto/CDN/global/ecards/<eCardStockID>.jpg`.
 - Without a token: HTTP 401 with an empty body.
 
-### 6.2 Certification photo (web app, not verified yet)
+### 6.2 Certification photo (verified with a real account on 2026-11-10)
 
 The picture in the top bar of the PADI website is the diver's **certification photo**, the photo
 on their eCards. The web app reads it with the same HTTP client as the logbook calls:
@@ -738,8 +744,11 @@ Answer (JSON): `{"preSignedURL":"https://...","status":"APPROVED","office":"..."
   **without** the bearer token.
 - Upload: `POST https://api.padi.com/p/photos/web/certification/upload` (not used).
 
-What a real account answers (the exact status names, the storage host, the image format and
-size, how long the link lives) is **not verified yet** (Q19).
+Verified with a real account on 2026-11-10 (the hosted service showed the photo): `api.padi.com`
+accepts the Cognito ID token of our sign-in (client `2arn5r23p0ugce89a5moe95v1l`) with the
+`affiliate-id` header, answers `APPROVED` with a `preSignedURL`, and the link gives an image
+without any token. Still open (Q19): the other `status` values, the storage host and how long the
+link lives.
 
 ### 6.3 Others (web app, not used, not verified yet)
 
@@ -853,6 +862,6 @@ title starting with `MCPTEST_`, and remove it afterwards.
 17. **Q17** `NoSurge`, `Nitrox` and `Heliox` are accepted by the API: how do the web and mobile
     apps show them?
 18. **Q18** The full answer of the instructor lookup, and what an unknown number returns.
-19. **Q19** Certification photo: does `api.padi.com` accept the Cognito ID token from our sign-in
-    paths (and need `affiliate-id`)? The exact `status` values, the storage host of
-    `preSignedURL`, the image format and size, and how long the link lives.
+19. **Q19** Certification photo: the token, the `APPROVED` answer and the download are verified
+    (6.2). Still open: whether `affiliate-id` is needed, the other `status` values, the storage
+    host of `preSignedURL` and how long the link lives.
