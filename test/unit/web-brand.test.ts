@@ -114,6 +114,8 @@ describe("product name", () => {
     const { html } = await new Browser().page("/login");
     expect(html).toContain(`<span class="brand-name"><b>MCP</b> for PADI</span>`);
     expect(html).toMatch(/<title>[^<]+ · MCP for PADI<\/title>/);
+    // Apple Passwords names saved logins after og:site_name (else it falls back to the domain).
+    expect(html).toContain('<meta property="og:site_name" content="MCP for PADI">');
   });
 
   it("is in the footer disclaimer, which says that PADI has nothing to do with it", async () => {

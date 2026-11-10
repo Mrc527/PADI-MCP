@@ -213,17 +213,19 @@ export function accountRoutes(ctx: WebContext): Router {
 
   /**
    * The fields of a PADI sign-in, and the "Save and test" button. `browserTimeZone`: nothing was
-   * chosen yet, so the page may select the browser's time zone.
+   * chosen yet, so the page may select the browser's time zone. The fields hold the PADI.com
+   * sign-in, not this site's: autocomplete="off" keeps password managers from filing them (or
+   * filling them in) as the login of this site.
    */
   const signInFields = (values: SignInValues, withSettings: boolean, enforced: boolean, browserTimeZone = false) =>
     html`<div class="row">
         <div>
           <label for="email">${t("account.padi.email")}</label>
-          <input id="email" name="email" type="email" required autocomplete="username" value="${values.email}" placeholder="you@example.com">
+          <input id="email" name="email" type="email" required autocomplete="off" value="${values.email}" placeholder="you@example.com">
         </div>
         <div>
           <label for="password">${t("account.padi.password")}<span class="hint">${t("account.padi.passwordHint")}</span></label>
-          <input id="password" name="password" type="password" required autocomplete="current-password">
+          <input id="password" name="password" type="password" required autocomplete="off">
         </div>
       </div>
       ${withSettings

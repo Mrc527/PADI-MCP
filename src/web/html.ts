@@ -117,7 +117,8 @@ export function layout(opts: LayoutOptions, body: SafeHtml): string {
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
-<title>${escapeHtml(opts.title)} · ${escapeHtml(t("common.appName"))}</title>${opts.description ? `\n<meta name="description" content="${escapeHtml(opts.description)}">` : ""}
+<title>${escapeHtml(opts.title)} · ${escapeHtml(t("common.appName"))}</title>
+<meta property="og:site_name" content="${escapeHtml(t("common.appName"))}">${opts.description ? `\n<meta name="description" content="${escapeHtml(opts.description)}">` : ""}
 <link rel="icon" href="/favicon.ico" sizes="48x48">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">

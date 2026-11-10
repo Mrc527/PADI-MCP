@@ -131,6 +131,10 @@ describe("accounts", () => {
     const { html } = await admin.page("/account");
     expect(html).toContain("admin@example.com");
     expect(html).toContain(`${base}/mcp`);
+    // The PADI.com sign-in is not this site's login: password managers must not file it as one.
+    expect(html).toContain('<input id="email" name="email" type="email" required autocomplete="off"');
+    expect(html).toContain('<input id="password" name="password" type="password" required autocomplete="off">');
+    expect(html).not.toMatch(/autocomplete="(username|current-password)"/);
     const adminPage = await admin.page("/admin");
     expect(adminPage.res.status).toBe(200);
     expect(adminPage.html).toContain("Administration");
