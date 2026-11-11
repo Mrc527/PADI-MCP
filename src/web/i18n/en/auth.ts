@@ -44,6 +44,7 @@ export default {
   "auth.requestSent.title": "Request sent",
   "auth.requestSent.thanks": "Thank you. An administrator will review your request.",
   "auth.requestSent.noEmail": "You will not get an email, so check back later or ask the administrator.",
+  "auth.requestSent.email": "Once your request is approved, you get an email with the next steps.",
   "auth.requestSent.signInLater": "Once it is approved, sign in with your email and password. If you had already sent a request for this address, only the first one counts: use the password you chose then.",
   "auth.requestSent.expiry": "Requests that are not answered within 30 days are deleted. You can then send a new one.",
   "auth.requestSent.goToSignIn": "Go to sign in",

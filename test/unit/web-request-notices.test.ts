@@ -1,12 +1,14 @@
 /**
- * E-mails to administrators about new access requests (the waitlist), sent through the
- * operator's SMTP server. A fake sender records the e-mails instead of using SMTP.
+ * E-mails to administrators about new access requests (the waitlist), and the welcome e-mail to a
+ * person whose request was approved, sent through the operator's SMTP server. A fake sender
+ * records the e-mails instead of using SMTP.
  */
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { SMTPServer } from "smtp-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { t, tn } from "../../src/web/i18n/index.js";
+import { LOCALES, t, tn } from "../../src/web/i18n/index.js";
+import { CONTACT_EMAIL, OPERATOR_NAME } from "../../src/web/operator.js";
 import { isEmail } from "../../src/web/email.js";
 import {
   classifySendError,
@@ -14,13 +16,16 @@ import {
   quoteMessage,
   RequestNotices,
   showAddress,
+  SMTP_TIMEOUTS,
   smtpSender,
+  smtpTransport,
   smtpUrlProblem,
   smtpUserAddress,
   when,
   type NoticeMail,
 } from "../../src/web/request-notices.js";
 import { createWebApp, webOptionsFromEnv, type WebApp } from "../../src/web/server.js";
+import { LOGO_CID, welcomeMail } from "../../src/web/welcome-mail.js";
 import { Browser, setBase } from "../helpers/web-client.js";
 
 let web: WebApp;
@@ -506,6 +511,219 @@ describe("sending through the operator's SMTP server", () => {
 
       const refused = await smtpSender(`smtp://notify:wrong@127.0.0.1:${port}?requireTLS=false`)({ to: "admin@example.com", from: "notify@example.com", subject: "x", text: "x" }).catch((e: unknown) => e);
       expect(classifySendError(refused)).toBe("auth");
+    } finally {
+      await new Promise<void>((r) => smtp.close(() => r()));
+    }
+  });
+
+  it("waits only a limited time for the server, so approving never hangs on a stalled server", async () => {
+    // nodemailer alone waits up to 10 minutes, and the welcome e-mail is sent while the admin
+    // page waits for the approval.
+    const optionsOf = (url: string) => (smtpTransport(url).transporter as unknown as { options: Record<string, unknown> }).options;
+    expect(SMTP_TIMEOUTS.socketTimeout).toBeLessThanOrEqual(120_000);
+    expect(optionsOf("smtps://notify:p@mail.example.com:465")).toMatchObject({ requireTLS: true, ...SMTP_TIMEOUTS });
+    // The URL's options win, as for requireTLS.
+    expect(optionsOf("smtp://notify:p@mail.example.com:587?socketTimeout=60000")).toMatchObject({ socketTimeout: 60_000, connectionTimeout: 30_000 });
+
+    // A server that greets and then never answers.
+    const sockets = new Set<Socket>();
+    const stalled = createNetServer((socket) => {
+      sockets.add(socket);
+      socket.on("error", () => {});
+      socket.write("220 mail.example.com ESMTP\r\n");
+    });
+    await new Promise<void>((r) => stalled.listen(0, "127.0.0.1", () => r()));
+    const port = (stalled.address() as AddressInfo).port;
+    const mails: string[] = [];
+    try {
+      const url = `smtp://127.0.0.1:${port}?requireTLS=false&socketTimeout=300`;
+      const startedAt = Date.now();
+      const error = await smtpSender(url)({ to: "admin@example.com", from: "notify@example.com", subject: "x", text: "x" }).catch((e: unknown) => e);
+      expect((error as { code?: string }).code).toBe("ETIMEDOUT");
+      expect(classifySendError(error)).toBe("network");
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+
+      // The welcome e-mail ends as "the mail server did not answer", and the approval goes on.
+      const notices = new RequestNotices({ store: store(), publicUrl: new URL(base), log: (m) => mails.push(m), from: "notify@example.com", send: smtpSender(url) });
+      const person = request("welcome-stalled@example.com");
+      expect(await notices.welcome(adminUser(), person)).toEqual({ ok: false, problem: "network" });
+      expect(mails).toEqual(["Welcome e-mail for an approved access request failed (network)"]);
+    } finally {
+      store().rejectAllAccessRequests();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((r) => stalled.close(() => r()));
+    }
+  });
+});
+
+describe("welcome e-mail when a request is approved", () => {
+  const approve = async (email: string) => {
+    const { csrf } = await admin.page("/admin");
+    const id = store().getUserByEmail(email)!.id;
+    return admin.post("/admin/requests/action", { _csrf: csrf, id, action: "approve" });
+  };
+  const welcomeTo = (address: string) => sent.find((s) => s.mail.to === address)?.mail;
+
+  it("goes from the operator's sender to the person, replies to the admin, in the language they asked in", async () => {
+    const visitor = new Browser();
+    await visitor.page("/signup?lang=it");
+    const signedUp = await visitor.signup("welcome-it@example.com", PASSWORD, { note: "Ciao <b>admin</b>, see https://evil.example/x" });
+    expect(signedUp.status).toBe(200);
+    // With a mail server the page announces the welcome e-mail, not "you will not get an e-mail".
+    const sentPage = await signedUp.text();
+    const shown = (key: "auth.requestSent.email" | "auth.requestSent.noEmail") => t(key, undefined, "it").replace(/'/g, "&#39;");
+    expect(sentPage).toContain(shown("auth.requestSent.email"));
+    expect(sentPage).not.toContain(shown("auth.requestSent.noEmail"));
+    expect(store().getUserByEmail("welcome-it@example.com")!.lang).toBe("it");
+    sent.length = 0;
+    const res = await approve("welcome-it@example.com");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Request approved. A welcome e-mail with the next steps went to welcome-it@example.com.");
+    expect(store().getUserByEmail("welcome-it@example.com")!.pending).toBe(false);
+    // The e-mail about the request itself may have gone out too: find the welcome.
+    const mail = welcomeTo("welcome-it@example.com")!;
+    expect(mail.from).toBe("notify@example.com");
+    expect(mail.replyTo).toBe("admin@example.com");
+    const app = t("common.appName", undefined, "it");
+    expect(mail.subject).toBe(t("admin.welcome.subject", { app }, "it"));
+    for (const path of ["login", "account", "mcp", "terms"]) expect(mail.text).toContain(`${base}/${path}`);
+    expect(mail.text).toContain(t("admin.welcome.free", { app }, "it"));
+    expect(mail.text).toContain(t("admin.welcome.risk", { operator: OPERATOR_NAME }, "it"));
+    expect(mail.text).toContain(t("common.footer.disclaimer", undefined, "it"));
+    // Nothing the person typed.
+    expect(mail.text).not.toContain("evil");
+    expect(mail.html).not.toContain("evil");
+    // The HTML version: same texts, a sign-in button, the logo inside the e-mail.
+    const html = mail.html!;
+    expect(html).toContain('<html lang="it">');
+    expect(html).toContain(`<a href="${base}/login"`);
+    expect(html).toContain(`>${t("auth.signIn.button", undefined, "it")}</a>`);
+    expect(html).toContain(`<a href="${base}/mcp"`);
+    expect(html).toContain(`<a href="${base}/terms"`);
+    expect(html).toContain(`<img src="cid:${LOGO_CID}"`);
+    expect(mail.inline).toEqual([expect.objectContaining({ cid: LOGO_CID, contentType: "image/png" })]);
+    // Style attributes hold no double quotes that would end them early (the font list).
+    expect(html).not.toMatch(/style="[^"]*"[A-Za-z]/);
+    // The log never names the person.
+    expect(logs.filter((m) => /@/.test(m))).toEqual([]);
+  });
+
+  it("says in English that it is free while experimental and used at one's own risk", async () => {
+    request("welcome-en@example.com");
+    sent.length = 0;
+    await approve("welcome-en@example.com");
+    const mail = welcomeTo("welcome-en@example.com")!;
+    expect(mail.subject).toBe("Your access to MCP for PADI is ready");
+    expect(mail.text).toContain(`Your request for MCP for PADI was approved. You can now sign in with your e-mail address and the password you chose when you sent the request:\n${base}/login`);
+    expect(mail.text).toContain(`1. On your PADI account page, sign in to PADI with the e-mail address and password you use on padi.com. Your PADI password is used once and never stored: ${base}/account`);
+    expect(mail.text).toContain(`The MCP address to add is: ${base}/mcp`);
+    expect(mail.text).toContain("MCP for PADI is free while it is experimental. It may change or stop at any time.");
+    expect(mail.text).toContain(`You use it at your own risk. To the extent the law allows, ${OPERATOR_NAME} is not liable for any damage it causes`);
+    expect(mail.text).toContain(`The terms of use apply: ${base}/terms`);
+    expect(mail.text).toContain("Questions? Just reply to this e-mail.");
+    expect(mail.text).toContain("PADI is a registered trademark of PADI Worldwide Corp.");
+  });
+
+  it("approves anyway, and says so, when the e-mail cannot be sent", async () => {
+    request("welcome-fail@example.com");
+    failWith = smtpError("EAUTH", 535);
+    try {
+      const res = await approve("welcome-fail@example.com");
+      expect(await res.text()).toContain("Request approved, but no welcome e-mail could be sent: the mail server refused the sign-in (check SMTP_URL). Let the person know that they can sign in now.");
+    } finally {
+      failWith = undefined;
+    }
+    expect(store().getUserByEmail("welcome-fail@example.com")!.pending).toBe(false);
+    expect(logs).toContain("Welcome e-mail for an approved access request failed (auth)");
+    // Approving again does nothing (and sends nothing).
+    sent.length = 0;
+    const again = await approve("welcome-fail@example.com");
+    expect(again.status).toBe(303);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("sends nothing to an address that is not ordinary, and says why", async () => {
+    // Saved by an older version, which checked addresses less strictly.
+    request("odd address\r\nBcc: victim@example.com");
+    sent.length = 0;
+    const res = await approve("odd address\r\nBcc: victim@example.com");
+    expect(await res.text()).toContain("Request approved, but no welcome e-mail could be sent: the person&#39;s email address is not an ordinary address.");
+    expect(sent.filter((s) => s.mail.to.includes("odd"))).toEqual([]);
+  });
+
+  it("sends nothing without an SMTP server", async () => {
+    const notices = new RequestNotices({ store: store(), publicUrl: new URL(base), log: () => {} });
+    const person = request("welcome-nosmtp@example.com");
+    expect(await notices.welcome(adminUser(), person)).toEqual({ ok: false, problem: "noSmtp" });
+    store().rejectAllAccessRequests();
+  });
+
+  it("lets replies go to the operator when the admin's address is not ordinary", async () => {
+    const mails: NoticeMail[] = [];
+    const notices = new RequestNotices({ store: store(), publicUrl: new URL(base), log: () => {}, from: "notify@example.com", send: async (m) => void mails.push(m) });
+    const odd = store().createUser("boss\r\nBcc: victim@example.com", "x", true);
+    const person = request("welcome-reply@example.com");
+    try {
+      expect(await notices.welcome(odd, person)).toEqual({ ok: true, address: "welcome-reply@example.com" });
+      expect(mails[0]!.replyTo).toBe(CONTACT_EMAIL);
+      expect(mails[0]!.to).toBe("welcome-reply@example.com");
+    } finally {
+      store().deleteUser(odd.id);
+      store().rejectAllAccessRequests();
+    }
+  });
+
+  it("has every text in every language, without list markers in the HTML, and escapes every value", () => {
+    const url = new URL("https://padi.example.com/a&b'c/");
+    for (const lang of LOCALES) {
+      const mail = welcomeMail(lang, url);
+      const app = t("common.appName", undefined, lang);
+      expect(mail.text, lang).toContain(t("admin.welcome.questions", undefined, lang));
+      expect(mail.text, lang).toContain("https://padi.example.com/a&b'c/mcp");
+      // The steps are numbered by the layout, the notes are a list: no "1. " or "- " in the HTML.
+      expect(mail.html, lang).not.toMatch(/>\s*(?:1\.|2\.|-) /);
+      expect(mail.html, lang).toContain(`<title>${t("admin.welcome.subject", { app }, lang)}</title>`);
+      // The address is escaped everywhere in the HTML.
+      expect(mail.html, lang).not.toContain("a&b'c");
+      expect(mail.html, lang).toContain('<a href="https://padi.example.com/a&amp;b&#39;c/login"');
+    }
+  });
+
+  it("is delivered over SMTP with a text and an HTML part, the logo inline, and the Reply-To", async () => {
+    const received: { from: string; to: string[]; raw: string }[] = [];
+    const smtp = new SMTPServer({
+      disabledCommands: ["STARTTLS"],
+      authOptional: true,
+      onData(stream, session, cb) {
+        const chunks: Buffer[] = [];
+        stream.on("data", (c: Buffer) => chunks.push(c));
+        stream.on("end", () => {
+          received.push({ from: String(session.envelope.mailFrom && session.envelope.mailFrom.address), to: session.envelope.rcptTo.map((r) => r.address), raw: Buffer.concat(chunks).toString() });
+          cb();
+        });
+      },
+    });
+    await new Promise<void>((r) => smtp.listen(0, "127.0.0.1", () => r()));
+    const port = (smtp.server.address() as AddressInfo).port;
+    try {
+      await smtpSender(`smtp://127.0.0.1:${port}?requireTLS=false`)({
+        to: "new.user@example.com",
+        from: "notify@example.com",
+        replyTo: "admin@example.com",
+        subject: "Welcome",
+        text: "Hello",
+        html: '<p>Hello</p><img src="cid:logo@x">',
+        inline: [{ cid: "logo@x", filename: "logo.png", contentType: "image/png", content: Buffer.from("png") }],
+      });
+      expect(received.map(({ from, to }) => ({ from, to }))).toEqual([{ from: "notify@example.com", to: ["new.user@example.com"] }]);
+      const raw = received[0]!.raw;
+      expect(raw).toMatch(/^Reply-To: admin@example\.com\r?$/m);
+      expect(raw).toMatch(/Auto-Submitted: auto-generated/i);
+      expect(raw).toContain("Content-Type: text/plain");
+      expect(raw).toContain("Content-Type: text/html");
+      expect(raw).toMatch(/Content-Type: image\/png; name=logo\.png/);
+      expect(raw).toContain("Content-ID: <logo@x>");
+      expect(raw).toContain("Content-Disposition: inline");
     } finally {
       await new Promise<void>((r) => smtp.close(() => r()));
     }

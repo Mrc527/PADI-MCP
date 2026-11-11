@@ -124,6 +124,8 @@ const MIGRATIONS: string[] = [
    ALTER TABLE users ADD COLUMN avatar_at INTEGER;
    ALTER TABLE users ADD COLUMN avatar_checked_at INTEGER;
    ALTER TABLE users ADD COLUMN avatar_check_failed INTEGER NOT NULL DEFAULT 0;`,
+  // 3: usage statistics on the admin page read the activity of all users by time
+  `CREATE INDEX activity_at ON activity(at);`,
 ];
 
 export type Db = DatabaseSync;

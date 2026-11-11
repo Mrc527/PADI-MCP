@@ -24,7 +24,7 @@ messages): simple English, short sentences, **never the em dash character**, no 
 | Product name (UI, docs) | MCP for PADI |
 | npm package, binary, Docker image, compose service | `padi-mcp` |
 | GitHub repo | `Mrc527/PADI-MCP` (image `ghcr.io/mrc527/padi-mcp`) |
-| MCP registry name (`server.json`) | `io.github.Mrc527/mcp-for-padi` |
+| MCP registry name (`server.json`) | `ch.visin.mcp/padi` |
 | Hosted service | `https://padi.mcp.visin.ch` (MCP address `https://padi.mcp.visin.ch/mcp`), deployed to `nebula.visin.ch` like icloud-mcp |
 | MCP `serverInfo.name` | `padi-mcp` |
 | OAuth scope | `padi` |
@@ -292,6 +292,7 @@ of section 4. `AppConfig.secrets` holds the password and refresh token for redac
 - **DB**: one fresh initial schema (no migrations from iCloud): column `service_enc`,
   `service_updated_at`, `padi_needs_reconnect`, and the template's other tables. Migration 2 adds
   the template's `avatars` table and `users.avatar_at`, `avatar_checked_at`, `avatar_check_failed`.
+  Migration 3 adds the index `activity(at)` for the usage statistics (as the template's migration 9).
 - **Profile photo** (as the template's iCloud "My Card" photo, `src/web/avatar.ts`): the top bar
   and the account page header show the user's PADI certification photo, the picture the PADI
   website shows. `AvatarService` checks it when the account page opens: right after the PADI
@@ -317,12 +318,26 @@ of section 4. `AppConfig.secrets` holds the password and refresh token for redac
   account) in all languages; it does not describe demo accounts, which only an administrator
   makes.
 - **Admin page**: no service checkboxes (one service); user list column "PADI" (connected / not /
-  needs reconnect); overview counts connected users. Everything else as in the template.
+  needs reconnect); overview counts connected users. Everything else as in the template, also
+  the usage statistics page (`/admin/stats`, `src/web/admin-stats.ts`): calls, active users,
+  failed calls and the typical time for 24 hours, 7, 30 or 90 days, a column chart drawn as SVG
+  on the server (no inline scripts or styles under the CSP), and tables of tools (PADI's own tool
+  names from the activity log), users and AI apps; one user on their own. The privacy policy says
+  that the administrator sees these statistics.
 - **Access-request e-mails**: the template sent them through the admin's iCloud SMTP. Now: optional
   operator SMTP (`SMTP_URL`, `NOTIFY_FROM`); without it, no e-mail is sent and the admin page still
   lists requests. The SMTP connection must use TLS (`smtps://`, or `smtp://` with STARTTLS;
   `?requireTLS=false` turns this off). The sender is `NOTIFY_FROM` or the SMTP user name when it is
   an e-mail address, never the administrator's own address; with neither, the server does not start.
+- **Welcome e-mail** (template: from the approving admin's iCloud Mail, with a copy in their Sent
+  folder). Now: through the same operator SMTP and sender as the request e-mails, to the approved
+  person, Reply-To the approving administrator (the operator's `CONTACT_EMAIL` when that address
+  is not an ordinary one), in the language saved with the request (`users.lang`, set at sign-up;
+  English otherwise). Plain text and HTML (`src/web/welcome-mail.ts`, logo inline as cid:,
+  every value escaped), with the steps for PADI (sign in to PADI on the account page, add the MCP
+  address to the AI app), free while experimental, own risk, the link to `/terms` and the
+  trademark line of the footer. No copy in a Sent folder (there is no mailbox). Without SMTP, or
+  when sending fails, the request is approved anyway and the admin page says why.
 - **Consent page**: the permission lines say what the AI app can do with the logbook (read dives,
   and unless read-only: add, change, delete dives, submit to a PADI Pro).
 - **Start page, legal pages, connect page**: rewritten for PADI. No video in v1.

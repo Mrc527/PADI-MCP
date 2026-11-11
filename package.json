@@ -1,6 +1,6 @@
 {
   "name": "padi-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP for PADI: an unofficial MCP server that lets Claude, ChatGPT and other AI apps read and manage your PADI online dive logbook, as a multi-user web service or locally. Not affiliated with PADI.",
   "type": "module",
   "bin": {

@@ -36,6 +36,7 @@ export default {
   "auth.requestSent.title": "Demande envoyée",
   "auth.requestSent.thanks": "Merci. Un administrateur va examiner votre demande.",
   "auth.requestSent.noEmail": "Vous ne recevrez pas d'e-mail : revenez plus tard ou renseignez-vous auprès de l'administrateur.",
+  "auth.requestSent.email": "Une fois votre demande approuvée, vous recevrez un e-mail avec les prochaines étapes.",
   "auth.requestSent.signInLater": "Une fois votre demande approuvée, connectez-vous avec votre adresse e-mail et votre mot de passe. Si vous aviez déjà envoyé une demande pour cette adresse, seule la première compte : utilisez le mot de passe choisi à ce moment-là.",
   "auth.requestSent.expiry": "Les demandes restées sans réponse pendant 30 jours sont supprimées. Vous pourrez alors en envoyer une nouvelle.",
   "auth.requestSent.goToSignIn": "Aller à la page de connexion",

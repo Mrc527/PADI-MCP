@@ -57,6 +57,17 @@ describe("deploy files", () => {
     expect(read("deploy/server/.env.example")).not.toMatch(/^HOST_PORT=/m);
   });
 
+  it("say that SMTP_URL is also used for the welcome e-mail to approved people", () => {
+    for (const path of ["deploy/docker-compose.yml", "deploy/server/compose.yml", "deploy/.env.example", "deploy/server/.env.example"]) {
+      const text = read(path);
+      // The comment lines right before SMTP_URL.
+      const lines = text.slice(0, text.search(/^\s*#?SMTP_URL[:=]/m)).trimEnd().split("\n");
+      const comment = lines.slice(lines.findLastIndex((line) => !/^\s*#/.test(line)) + 1).join(" ");
+      expect(comment, path).toContain("access requests");
+      expect(comment, path).toContain("welcome e-mail");
+    }
+  });
+
   it("ship no administrator password", () => {
     for (const path of ["deploy/.env.example", "deploy/server/.env.example"]) {
       const text = read(path);

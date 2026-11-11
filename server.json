@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.Mrc527/mcp-for-padi",
+  "name": "ch.visin.mcp/padi",
   "title": "MCP for PADI",
   "description": "Unofficial. Read and log dives in your PADI online logbook. Needs an account at padi.mcp.visin.ch.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "websiteUrl": "https://padi.mcp.visin.ch",
   "icons": [
     {

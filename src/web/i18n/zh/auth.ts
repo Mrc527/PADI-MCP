@@ -40,6 +40,7 @@ export default {
   "auth.requestSent.title": "申请已发送",
   "auth.requestSent.thanks": "谢谢。管理员将审核你的申请。",
   "auth.requestSent.noEmail": "你不会收到电子邮件通知，请稍后回来查看，或询问管理员。",
+  "auth.requestSent.email": "申请获批后，你会收到一封电子邮件，告诉你接下来的步骤。",
   "auth.requestSent.signInLater": "申请获批后，请使用你的电子邮件地址和密码登录。如果你之前已为此地址发送过申请，则只有第一个申请有效，请使用你当时设置的密码。",
   "auth.requestSent.expiry": "30 天内未获处理的申请将被删除，届时你可以重新发送申请。",
   "auth.requestSent.goToSignIn": "前往登录",

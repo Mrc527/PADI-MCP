@@ -1,6 +1,7 @@
 /**
- * The web database file: the upgrade of a version-1 database (from before the profile photo), and
- * a deleted profile photo really leaving the database files (secure_delete and a checkpoint).
+ * The web database file: the upgrade of a version-1 database (from before the profile photo) and
+ * of a version-2 database (from before the time index of the activity log), and a deleted profile
+ * photo really leaving the database files (secure_delete and a checkpoint).
  * Real SQLite files in a temporary folder; invented data only.
  */
 import { randomBytes } from "node:crypto";
@@ -31,19 +32,20 @@ describe("web database", () => {
   it("upgrades a version-1 database: no photo and no check yet, and the photo goes with the user", () => {
     const dir = tempDir();
     const box = new SecretBox(randomBytes(32));
-    // A version-1 database: today's schema without what version 2 added, with one user in it.
+    // A version-1 database: today's schema without what versions 2 and 3 added, with one user in it.
     let db = openDatabase(dir);
     const id = new Store(db, box).createUser("diver.one@example.com", "invented-hash", false).id;
     db.exec(`DROP TABLE avatars;
       ALTER TABLE users DROP COLUMN avatar_at;
       ALTER TABLE users DROP COLUMN avatar_checked_at;
       ALTER TABLE users DROP COLUMN avatar_check_failed;
+      DROP INDEX activity_at;
       PRAGMA user_version = 1;`);
     db.close();
 
     db = openDatabase(dir);
     try {
-      expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
       expect(db.prepare("SELECT avatar_at, avatar_checked_at, avatar_check_failed FROM users WHERE id = ?").get(id)).toEqual({
         avatar_at: null,
         avatar_checked_at: null,
@@ -63,6 +65,27 @@ describe("web database", () => {
       // Foreign keys are on: the photo goes with the user.
       store.deleteUser(id);
       expect(db.prepare("SELECT COUNT(*) AS n FROM avatars").get()).toEqual({ n: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("upgrades a version-2 database: the activity log gets its time index, the log stays", () => {
+    const dir = tempDir();
+    const box = new SecretBox(randomBytes(32));
+    // A version-2 database: today's schema without the index that version 3 added.
+    let db = openDatabase(dir);
+    const id = new Store(db, box).createUser("diver.two@example.com", "invented-hash", false).id;
+    new Store(db, box).logActivity(id, "logbook_list_dives", true, 120);
+    db.exec(`DROP INDEX activity_at;
+      PRAGMA user_version = 2;`);
+    db.close();
+
+    db = openDatabase(dir);
+    try {
+      expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'activity_at'").get()).toEqual({ name: "activity_at" });
+      expect(new Store(db, box).usageStats(0).calls).toBe(1);
     } finally {
       db.close();
     }

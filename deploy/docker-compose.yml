@@ -21,7 +21,8 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # MASTER_KEY: optional; otherwise generated once into the data volume (back it up).
-      # Optional: e-mails to administrators about access requests (your own SMTP server).
+      # Optional: e-mails to administrators about access requests and the welcome e-mail to
+      # approved people (your own SMTP server).
       SMTP_URL: ${SMTP_URL:-}
       NOTIFY_FROM: ${NOTIFY_FROM:-}
       # PADI logbook API for every user. auto (the default here): the proxy, and PADI's direct

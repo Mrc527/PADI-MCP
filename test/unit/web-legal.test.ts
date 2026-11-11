@@ -7,12 +7,13 @@ import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { STATS_PERIODS } from "../../src/web/admin-stats.js";
 import { hashPassword } from "../../src/web/crypto.js";
 import authEn from "../../src/web/i18n/en/auth.js";
 import commonEn from "../../src/web/i18n/en/common.js";
 import homeEn from "../../src/web/i18n/en/home.js";
 import legalEn from "../../src/web/i18n/en/legal.js";
-import { HTML_LANG, LOCALES } from "../../src/web/i18n/index.js";
+import { HTML_LANG, LOCALES, th } from "../../src/web/i18n/index.js";
 import { CONTACT_EMAIL, LEGAL_UPDATED, OPERATOR_NAME } from "../../src/web/operator.js";
 import { createWebApp, type WebApp } from "../../src/web/server.js";
 import { Browser, setBase } from "../helpers/web-client.js";
@@ -244,6 +245,13 @@ describe("what the privacy policy states matches the code", () => {
     const { html } = await get("/privacy");
     expect(html).toContain("<strong>Activity log:</strong> 90 days.");
     expect(html).toContain("after 30 days if nobody answers. The message to the administrator is deleted when the request is approved.");
+  });
+
+  it("says the administrator sees usage statistics from the activity log, as far back as the stats page goes", async () => {
+    const longest = Math.max(...STATS_PERIODS);
+    const { html } = await get("/privacy");
+    expect(html).toContain(`usage statistics from the activity log (per account and in total, for up to ${longest} days: how many tool calls, which tools and apps, and how many failed)`);
+    for (const lang of LOCALES) expect(String(th("legal.privacy.recipients.admin", { app: "x" }, lang)), lang).toMatch(new RegExp(`(^|\\D)${longest}(\\D|$)`));
   });
 
   it("deletes everything linked to an account when the account is deleted, except a used invite", async () => {

@@ -40,6 +40,7 @@ export default {
   "auth.requestSent.title": "Anfrage gesendet",
   "auth.requestSent.thanks": "Danke. Ein Administrator prüft deine Anfrage.",
   "auth.requestSent.noEmail": "Du bekommst keine E-Mail. Schau also später wieder vorbei oder frag den Administrator.",
+  "auth.requestSent.email": "Sobald deine Anfrage genehmigt ist, bekommst du eine E-Mail mit den nächsten Schritten.",
   "auth.requestSent.signInLater": "Sobald sie genehmigt ist, meldest du dich mit deiner E-Mail-Adresse und deinem Passwort an. Falls du für diese Adresse schon eine Anfrage gesendet hattest, zählt nur die erste: Verwende das Passwort, das du damals gewählt hast.",
   "auth.requestSent.expiry": "Anfragen, die nicht innerhalb von 30 Tagen beantwortet werden, werden gelöscht. Danach kannst du eine neue senden.",
   "auth.requestSent.goToSignIn": "Zur Anmeldung",

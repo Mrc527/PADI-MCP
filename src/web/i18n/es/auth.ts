@@ -36,6 +36,7 @@ export default {
   "auth.requestSent.title": "Solicitud enviada",
   "auth.requestSent.thanks": "Gracias. Un administrador revisará tu solicitud.",
   "auth.requestSent.noEmail": "No recibirás ningún correo electrónico, así que vuelve a consultar más tarde o pregunta al administrador.",
+  "auth.requestSent.email": "Cuando se apruebe tu solicitud, recibirás un correo electrónico con los siguientes pasos.",
   "auth.requestSent.signInLater": "Cuando se apruebe, inicia sesión con tu correo electrónico y tu contraseña. Si ya habías enviado una solicitud para esta dirección, solo cuenta la primera: usa la contraseña que elegiste entonces.",
   "auth.requestSent.expiry": "Las solicitudes que no se responden en 30 días se eliminan. Después puedes enviar una nueva.",
   "auth.requestSent.goToSignIn": "Ir a iniciar sesión",

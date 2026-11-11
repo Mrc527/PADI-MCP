@@ -7,7 +7,7 @@ import { rateLimit } from "express-rate-limit";
 import { bool, page, str, type WebContext } from "./context.js";
 import { burnPasswordCheck, hashPassword, verifyPassword } from "./crypto.js";
 import { html } from "./html.js";
-import { t, th, tn, type Locale } from "./i18n/index.js";
+import { locale, t, th, tn, type Locale } from "./i18n/index.js";
 import { brandMark, glyph } from "./icons.js";
 import { isEmail } from "./email.js";
 import { csrfOk, locals, preCsrf, safeNext, setCookie } from "./session.js";
@@ -202,7 +202,7 @@ export function authRoutes(ctx: WebContext): Router {
           <p>${t("auth.requestSent.thanks")}</p>
         </div>
         <div class="card">
-          <p>${t("auth.requestSent.noEmail")}</p>
+          <p>${ctx.notices.canSend ? t("auth.requestSent.email") : t("auth.requestSent.noEmail")}</p>
           <p>${t("auth.requestSent.signInLater")}</p>
           <p class="fine">${t("auth.requestSent.expiry")}</p>
           <div class="stack"><a class="button secondary block" href="/login">${t("auth.requestSent.goToSignIn")}</a></div>
@@ -248,7 +248,9 @@ export function authRoutes(ctx: WebContext): Router {
       const hash = await hashPassword(password);
       if (ctx.store.getUserByEmail(values.email)) return requestSent(req, res);
       try {
-        ctx.store.createUser(values.email, hash, false, { note: values.note });
+        const created = ctx.store.createUser(values.email, hash, false, { note: values.note });
+        // The welcome e-mail, once the request is approved, is written in this language.
+        ctx.store.setLang(created.id, locale());
       } catch {
         return requestSent(req, res);
       }
