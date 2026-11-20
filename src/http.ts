@@ -1,5 +1,5 @@
 /**
- * Streamable HTTP transport (stateless). Lets remote MCP clients connect over HTTP.
+ * Streamable HTTP transport (stateless, served by mcp-use). Lets remote MCP clients connect over HTTP.
  *
  * Security:
  * - Optional (required for non-loopback binds) bearer token, compared in constant time.
@@ -9,16 +9,19 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual, createHash } from "node:crypto";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { MCPServer } from "mcp-use";
 import { isLoopback, type HttpSettings } from "./config.js";
+import { handleMcpPost, readBody } from "./mcp-transport.js";
 
 export interface HttpServerOptions {
   settings: HttpSettings;
   /** Creates a fresh MCP server for each request (stateless mode). */
-  createMcpServer: () => McpServer;
+  createMcpServer: () => MCPServer;
   log: (message: string) => void;
 }
+
+/** Largest request body, as the MCP SDK allowed. */
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 function tokenMatches(expected: string, provided: string): boolean {
   // Hash both values so the comparison is constant-time regardless of length.
@@ -110,15 +113,20 @@ export function startHttpServer(options: HttpServerOptions): Promise<Server> {
         return;
       }
 
+      const raw = await readBody(req, MAX_BODY_BYTES);
+      if (raw === undefined) {
+        jsonRpcError(res, 413, "Request body too large", corsHeaders);
+        return;
+      }
+      let body: unknown;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        sendJson(res, 400, { jsonrpc: "2.0", error: { code: -32700, message: "Parse error: Invalid JSON" }, id: null }, corsHeaders);
+        return;
+      }
       for (const [k, v] of Object.entries(corsHeaders)) res.setHeader(k, v);
-      const mcp = options.createMcpServer();
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-      res.on("close", () => {
-        void transport.close();
-        void mcp.close();
-      });
-      await mcp.connect(transport);
-      await transport.handleRequest(req, res);
+      await handleMcpPost(options.createMcpServer(), req, res, body);
     } catch (error) {
       log(`HTTP request failed: ${(error as Error).message}`);
       if (!res.headersSent) jsonRpcError(res, 500, "Internal server error");

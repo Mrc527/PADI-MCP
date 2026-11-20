@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Icon } from "@modelcontextprotocol/sdk/types.js";
+import { MCPServer, type Icon } from "mcp-use";
 import { z } from "zod";
 import { describeConfig, type AppConfig } from "./config.js";
 import { DemoLogbookBackend, type DemoLogbookStore } from "./demo/logbook.js";
@@ -17,6 +16,13 @@ import { todayInZone } from "./util/dates.js";
 import { describeError, redact, UserFacingError } from "./util/errors.js";
 import { VERSION } from "./version.js";
 import { ICON_PNG } from "./web/brand-assets.js";
+
+declare global {
+  // mcp-use's switch for its usage events (sent to PostHog, with an id file in .mcp-use/).
+  var __MCP_USE_ANONYMIZED_TELEMETRY__: boolean | undefined;
+}
+// Off: this server keeps what users do with their logbook to itself.
+globalThis.__MCP_USE_ANONYMIZED_TELEMETRY__ = false;
 
 /** Without a web server (single-user mode) the icon goes inline. */
 const INLINE_ICONS: Icon[] = [{ src: `data:image/png;base64,${ICON_PNG[48]!.toString("base64")}`, mimeType: "image/png", sizes: ["48x48"] }];
@@ -306,22 +312,23 @@ async function accountInfo(config: AppConfig, services: Services, check: boolean
   return info;
 }
 
-export function createMcpServer(config: AppConfig, services: Services, log: (m: string) => void, hooks: McpServerHooks = {}): McpServer {
-  const server = new McpServer(
-    {
-      name: "padi-mcp",
-      title: SERVER_TITLE,
-      version: VERSION,
-      description: SERVER_DESCRIPTION,
-      icons: hooks.icons ?? INLINE_ICONS,
-      ...(hooks.websiteUrl ? { websiteUrl: hooks.websiteUrl } : {}),
-    },
-    {
-      instructions: buildInstructions(config) + (hooks.extraInstructions ? `\n${hooks.extraInstructions}` : ""),
-      capabilities: { tools: {}, prompts: {} },
-      maxToolInputElements: 10_000,
-    },
-  );
+/**
+ * The MCP server of one account. It is cheap to build (registration only): web mode builds one per
+ * request. Tool argument size is checked by the transports (src/mcp-transport.ts).
+ */
+export function createMcpServer(config: AppConfig, services: Services, log: (m: string) => void, hooks: McpServerHooks = {}): MCPServer {
+  const server = new MCPServer({
+    name: "padi-mcp",
+    title: SERVER_TITLE,
+    version: VERSION,
+    description: SERVER_DESCRIPTION,
+    icons: hooks.icons ?? INLINE_ICONS,
+    ...(hooks.websiteUrl ? { websiteUrl: hooks.websiteUrl } : {}),
+    instructions: buildInstructions(config) + (hooks.extraInstructions ? `\n${hooks.extraInstructions}` : ""),
+    // stdout carries the stdio protocol: no request log. No skills/ directory is served.
+    logging: { enabled: false },
+    skills: false,
+  });
   const ctx: ToolContext = {
     server,
     config,
@@ -363,14 +370,14 @@ export function reviewYear(input: string | undefined, today: string): { year: st
   return { text: t.slice(0, 100) };
 }
 
-function registerPrompts(server: McpServer, config: AppConfig): void {
+function registerPrompts(server: MCPServer, config: AppConfig): void {
   if (!config.readOnly) {
-    server.registerPrompt(
-      "log_a_dive",
+    server.prompt(
       {
+        name: "log_a_dive",
         title: "Log a dive",
         description: "Add a dive to the PADI logbook, asking only for what is missing",
-        argsSchema: { details: z.string().optional().describe("What you remember about the dive (site, date, depth, time, conditions, buddies, ...)") },
+        schema: z.object({ details: z.string().optional().describe("What you remember about the dive (site, date, depth, time, conditions, buddies, ...)") }),
       },
       ({ details }) => ({
         messages: [
@@ -389,12 +396,12 @@ function registerPrompts(server: McpServer, config: AppConfig): void {
       }),
     );
   }
-  server.registerPrompt(
-    "year_in_review",
+  server.prompt(
     {
+      name: "year_in_review",
       title: "Year in review",
       description: "A summary of a year of diving from the PADI logbook",
-      argsSchema: { year: z.string().optional().describe('The year, for example 2026, "last year" or "this year" (default: this year)') },
+      schema: z.object({ year: z.string().optional().describe('The year, for example 2026, "last year" or "this year" (default: this year)') }),
     },
     ({ year }) => {
       const today = todayInZone(config.timeZone);

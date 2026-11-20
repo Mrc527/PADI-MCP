@@ -1,5 +1,3 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.js";
 import { DemoLogbookStore } from "../../src/demo/logbook.js";
@@ -7,6 +5,7 @@ import { LogbookService, type ExportResult, type GetPhotosResult } from "../../s
 import type { LogbookBackend, PadiAccount } from "../../src/logbook/types.js";
 import { buildInstructions, createMcpServer, createServices, reviewYear, SERVER_DESCRIPTION, SERVER_TITLE, type Services } from "../../src/server.js";
 import { redact } from "../../src/util/errors.js";
+import { connectClient } from "../helpers/mcp-client.js";
 
 // Invented test data only.
 const PASSWORD = "not-a-real-password";
@@ -92,9 +91,7 @@ function fakeBackend(opts: { failWith?: string; checkError?: string } = {}): Log
 
 async function connectWith(config: ReturnType<typeof loadConfig>, services: Services, hooks: Parameters<typeof createMcpServer>[3] = {}) {
   const server = createMcpServer(config, services, () => {}, hooks);
-  const client = new Client({ name: "test", version: "1.0.0" });
-  const [ct, st] = InMemoryTransport.createLinkedPair();
-  await Promise.all([client.connect(ct), server.connect(st)]);
+  const client = await connectClient(server, "test");
   return client;
 }
 
@@ -272,9 +269,7 @@ describe("MCP server", () => {
     const services: Services = { backend, logbook: new LogbookService(backend, { readOnly: false, units: config.units, timeZone: config.timeZone }) };
     const lines: string[] = [];
     const server = createMcpServer(config, services, (line) => lines.push(line));
-    const client = new Client({ name: "test", version: "1.0.0" });
-    const [ct, st] = InMemoryTransport.createLinkedPair();
-    await Promise.all([client.connect(ct), server.connect(st)]);
+    const client = await connectClient(server, "test");
     expect((await client.callTool({ name: "padi_account_info", arguments: {} })).isError).toBe(true);
     const logged = lines.join("\n");
     expect(logged).toContain("Tool padi_account_info failed");

@@ -8,9 +8,9 @@
  *   padi-mcp --check      # sign in to PADI, count the dives and exit
  */
 
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig, describeConfig, type CliOverrides } from "./config.js";
 import { startHttpServer } from "./http.js";
+import { serveStdio } from "./mcp-transport.js";
 import { closeServices, createMcpServer, createServices } from "./server.js";
 import { describeError, redact, redactForLog } from "./util/errors.js";
 import { VERSION } from "./version.js";
@@ -177,10 +177,8 @@ async function main(): Promise<void> {
   }
 
   const server = createMcpServer(config, services, safeLog);
-  const transport = new StdioServerTransport();
-  transport.onclose = () => void shutdown(0);
-  process.stdin.on("end", () => void shutdown(0));
-  await server.connect(transport);
+  const stdio = serveStdio(server, { log: safeLog });
+  void stdio.closed.then(() => shutdown(0));
   safeLog(`ready (stdio). PADI logbook, units ${config.units}, API mode ${config.padi.apiMode}${config.readOnly ? " [read-only]" : ""}`);
 }
 

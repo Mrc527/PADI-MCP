@@ -4,13 +4,12 @@
  */
 
 import express, { type Request, type Response, type Router } from "express";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { Icon } from "@modelcontextprotocol/sdk/types.js";
+import type { Icon, MCPServer } from "mcp-use";
 import { DEMO_NOTICE } from "../demo/index.js";
 import { DemoLogbookStore } from "../demo/logbook.js";
+import { handleMcpPost } from "../mcp-transport.js";
 import { PadiAuthError, type PadiAuthErrorCode } from "../padi/auth.js";
 import { createMcpServer, createServices, type Services } from "../server.js";
 import { redactForLog, UserFacingError } from "../util/errors.js";
@@ -30,7 +29,7 @@ const SETUP_STORE = new DemoLogbookStore();
  * offers the same tools as a connected account, because Claude caches the tool list, but every
  * call answers with setup instructions.
  */
-function setupServer(ctx: WebContext, user: User, problem?: string | "reconnect"): McpServer {
+function setupServer(ctx: WebContext, user: User, problem?: string | "reconnect"): MCPServer {
   const accountUrl = `${issuerOf(ctx.publicUrl)}/account`;
   const message =
     problem === "reconnect"
@@ -152,7 +151,7 @@ export function mcpRoutes(ctx: WebContext): Router {
       res.status(401).json({ jsonrpc: "2.0", error: { code: -32001, message: "Account not active" }, id: null });
       return;
     }
-    let server: McpServer;
+    let server: MCPServer;
     try {
       const userCtx = user.padiNeedsReconnect && !user.demo ? undefined : ctx.pool.get(user);
       server = userCtx
@@ -174,14 +173,8 @@ export function mcpRoutes(ctx: WebContext): Router {
     } catch (error) {
       server = setupServer(ctx, user, (error as Error).message);
     }
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    res.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
     try {
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+      await handleMcpPost(server, req, res, req.body);
     } catch (error) {
       ctx.log(`MCP request failed: ${redactForLog((error as Error).message, [])}`);
       if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal error" }, id: null });

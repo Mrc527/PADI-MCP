@@ -5,6 +5,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.js";
 import { startHttpServer } from "../../src/http.js";
+import { messagesOf } from "../../src/mcp-transport.js";
 import { closeServices, createMcpServer, createServices, type Services } from "../../src/server.js";
 
 const TOKEN = "test-token-0123456789";
@@ -21,6 +22,7 @@ beforeAll(async () => {
       PADI_COGNITO_URL: "http://127.0.0.1:1/",
       PADI_LOGBOOK_URL: "http://127.0.0.1:1/api/Logbook",
       MCP_HTTP_TOKEN: TOKEN,
+      MCP_HTTP_ALLOWED_ORIGINS: "https://app.example.com",
     },
     { transport: "http", port: 0, host: "127.0.0.1" },
   );
@@ -82,5 +84,41 @@ describe("HTTP transport", () => {
     expect(health.status).toBe(200);
     const get = await fetch(url, { headers: { authorization: `Bearer ${TOKEN}`, accept: "text/event-stream" } });
     expect(get.status).toBe(405);
+  });
+
+  const authed = { ...headers, authorization: `Bearer ${TOKEN}` };
+
+  it("serves MCP through mcp-use on /mcp and on /", async () => {
+    for (const target of [url, url.replace(/\/mcp$/, "/")]) {
+      const res = await fetch(target, { method: "POST", headers: authed, body: initBody });
+      expect(res.status, target).toBe(200);
+      const [init] = (await messagesOf(res)) as Array<{ id: number; result: { serverInfo: { name: string } } }>;
+      expect(init!.id).toBe(1);
+      expect(init!.result.serverInfo.name).toBe("padi-mcp");
+    }
+  });
+
+  it("refuses bodies over 4 MB and bodies that are not JSON", async () => {
+    const big = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { pad: "x".repeat(4 * 1024 * 1024) } });
+    const tooLarge = await fetch(url, { method: "POST", headers: authed, body: big });
+    expect(tooLarge.status).toBe(413);
+    const bad = await fetch(url, { method: "POST", headers: authed, body: "{oops" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ jsonrpc: "2.0", id: null, error: { code: -32700 } });
+  });
+
+  it("refuses a tool call with more than 10000 argument elements before it is validated", async () => {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "logbook_list_dives", arguments: { query: Array(10_001).fill("x") } } });
+    const res = await fetch(url, { method: "POST", headers: authed, body });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: 5, result: { isError: true, content: [{ text: expect.stringMatching(/more than the maximum of 10000 elements/) }] } });
+  });
+
+  it("keeps the CORS headers of an allowed origin on the mcp-use answer", async () => {
+    const res = await fetch(url, { method: "POST", headers: { ...authed, origin: "https://app.example.com" }, body: initBody });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe("https://app.example.com");
+    expect(res.headers.get("vary")).toBe("Origin");
+    await res.text();
   });
 });

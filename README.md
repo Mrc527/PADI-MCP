@@ -76,7 +76,7 @@ docker compose up -d
 
 [Caddy](https://caddyserver.com) obtains the certificate. Open `https://DOMAIN`, sign in with the admin account, and you are done. Data (the SQLite database and the encryption key) lives in the `data` volume: **back it up**.
 
-**Without Docker** (Node.js 22.13 or newer):
+**Without Docker** (Node.js 22.22.2 or newer):
 
 ```bash
 npm install && npm run build
@@ -396,7 +396,7 @@ Other PADI hosts: `ecard.global-prod.padi.com` (eCards), `logbook-images-api.pad
 ## Local mode (single user)
 
 1. **Check your PADI sign-in.** You need the e-mail and password you use on [learning.padi.com](https://learning.padi.com). If you sign in to PADI with Google, Apple or Facebook, first set a PADI password: use "Forgot password" on [account.padi.com](https://account.padi.com) with the same e-mail.
-2. **Build the server** (Node.js 22.13 or newer):
+2. **Build the server** (Node.js 22.22.2 or newer):
 
    ```bash
    git clone https://github.com/Mrc527/PADI-MCP.git
@@ -611,7 +611,7 @@ npm run typecheck
 npm test               # unit tests (integration tests are skipped)
 ```
 
-The unit tests use a mocked `fetch` for the PADI client (sign-in success, failure and challenges, refresh, single-flight refresh, retry on 401 and `invalid-jwt`, the `auto` API mode switch, query text and headers in proxy and direct mode), and cover the logbook service (array literals, dates, units, merge on update, missing child rows, locked dives, delete confirmation), the MCP tool surface (tool list, annotations, read-only mode, strict arguments, redaction), the demo logbook, and the web service (sign-up, sign-in, CSRF, account settings, the full OAuth flow with the SDK's OAuth client as Claude would run it, token refresh and reuse detection, client metadata documents, admin controls, security headers, translations).
+The unit tests use a mocked `fetch` for the PADI client (sign-in success, failure and challenges, refresh, single-flight refresh, retry on 401 and `invalid-jwt`, the `auto` API mode switch, query text and headers in proxy and direct mode), and cover the logbook service (array literals, dates, units, merge on update, missing child rows, locked dives, delete confirmation), the MCP tool surface (tool list, annotations, read-only mode, strict arguments, redaction, and a snapshot of every tool, schema and prompt in `test/fixtures/mcp-surface.json`), the stdio bridge and HTTP hand-off to mcp-use, the demo logbook, and the web service (sign-up, sign-in, CSRF, account settings, the full OAuth flow with the SDK's OAuth client as Claude would run it, token refresh and reuse detection, client metadata documents, admin controls, security headers, translations).
 
 End-to-end tests start the real server (in process, and the built `dist/index.js` over stdio, `--http` and `--web`) against an in-process mock of the PADI API (`test/helpers/mock-padi.ts`: Cognito, the PADI auth API, the logbook GraphQL API and the REST endpoints). They never talk to PADI and need no PADI account:
 
@@ -628,7 +628,8 @@ Project layout:
 src/
   index.ts            CLI entry point (stdio / --web / --http / --check)
   config.ts           environment configuration
-  server.ts           MCP server, instructions, prompts, service wiring
+  server.ts           MCP server (mcp-use), instructions, prompts, service wiring
+  mcp-transport.ts    stdio bridge and HTTP hand-off to mcp-use, tool argument size limit
   http.ts             Streamable HTTP transport with auth and Host/Origin checks
   tooling.ts          tool registration helpers (errors, read-only gating, annotations, redaction)
   padi/               PADI client: endpoints, sign-in, token session, HTTP, GraphQL, API

@@ -7,7 +7,7 @@
  * JSON summary and the file content as text).
  */
 
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "mcp-use";
 import { rawResult, registerTool, type ToolContext, type ZodShape } from "../tooling.js";
 import {
   EXPORT_DEFAULT_LIMIT,

@@ -52,7 +52,8 @@ logos; the project logo is our own.
 src/
   index.ts            CLI (stdio / --web / --http / --check / --help)       [template, adapted]
   config.ts           AppConfig from env                                    [rewritten]
-  server.ts           createServices / createMcpServer / prompts            [rewritten]
+  server.ts           createServices / createMcpServer (mcp-use) / prompts  [rewritten]
+  mcp-transport.ts    stdio bridge and HTTP hand-off to mcp-use, argument size limit
   tooling.ts          registerTool (read-only gating, annotations, redaction) [template, as is]
   http.ts             single-user Streamable HTTP                            [template]
   version.ts                                                                 [template]
