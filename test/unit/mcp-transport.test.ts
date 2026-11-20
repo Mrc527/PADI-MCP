@@ -118,6 +118,13 @@ describe("refusal", () => {
   });
 });
 
+describe("refusal of subscriptions/listen", () => {
+  it("answers Method not found to a listen request and nothing to a listen notification", () => {
+    expect(refusal({ jsonrpc: "2.0", id: 4, method: "subscriptions/listen", params: {} })).toEqual({ jsonrpc: "2.0", id: 4, error: { code: -32601, message: "Method not found" } });
+    expect(refusal({ jsonrpc: "2.0", method: "subscriptions/listen" })).toEqual([]);
+  });
+});
+
 describe("messagesOf", () => {
   it("reads a JSON answer, an empty answer and an SSE stream", async () => {
     expect(await messagesOf(Response.json({ jsonrpc: "2.0", id: 1, result: {} }))).toEqual([{ jsonrpc: "2.0", id: 1, result: {} }]);
@@ -254,6 +261,32 @@ describe("serveStdio", () => {
     expect((byId.get(3)!.result as { tools: Array<{ name: string }> }).tools.map((t) => t.name)).toContain("logbook_list_dives");
     expect((byId.get(4)!.result as { isError?: boolean }).isError).toBeFalsy();
     expect(JSON.stringify(byId.get(5)!.result)).toMatch(/2025-01-01/);
+  });
+
+  it("answers a modern listen request at once and still exits when the input ends", async () => {
+    const meta = { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "t", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} };
+    const s = stdioSession(demoServer());
+    s.send({ jsonrpc: "2.0", id: "l", method: "subscriptions/listen", params: { notifications: { toolsListChanged: true }, _meta: meta } });
+    s.end();
+    await s.closed;
+    expect(s.messages()).toEqual([{ jsonrpc: "2.0", id: "l", error: { code: -32601, message: "Method not found" } }]);
+  });
+
+  it("answers Method not found to a modern request whose method cannot be a header value", async () => {
+    const meta = { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "t", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} };
+    const fake = fakeServer(() => sse({}));
+    const s = stdioSession(fake.server);
+    s.send({ jsonrpc: "2.0", id: 1, method: "tools/列表", params: { _meta: meta } });
+    s.send({ jsonrpc: "2.0", id: 2, method: "tools/list\r\nx: y", params: { _meta: meta } });
+    s.send({ jsonrpc: "2.0", method: "notifications/x y", params: { _meta: meta } });
+    s.end();
+    await s.closed;
+    expect(s.messages()).toEqual([
+      { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } },
+      { jsonrpc: "2.0", id: 2, error: { code: -32601, message: "Method not found" } },
+    ]);
+    expect(fake.requests).toHaveLength(0);
+    expect(s.logs).toEqual([]);
   });
 
   it("passes batches on and writes the answer", async () => {
@@ -407,6 +440,19 @@ describe("handleMcpPost and readBody", () => {
     expect(empty.status).toBe(400);
     expect(await empty.json()).toMatchObject({ error: { code: -32700 } });
     expect(fake.requests).toHaveLength(0);
+  });
+
+  it("answers a modern listen request at once instead of holding the connection open", async () => {
+    const base = await serve(demoServer());
+    const meta = { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "t", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} };
+    const res = await fetch(base, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2026-07-28", "mcp-method": "subscriptions/listen" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "subscriptions/listen", params: { notifications: { toolsListChanged: true }, _meta: meta } }),
+      signal: AbortSignal.timeout(5000),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ jsonrpc: "2.0", id: 7, error: { code: -32601, message: "Method not found" } });
   });
 
   it("reads bodies up to the limit and refuses larger ones", async () => {

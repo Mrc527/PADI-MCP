@@ -54,12 +54,18 @@ function oversizedToolCall(message: unknown): string | undefined {
 }
 
 /**
- * The answer to a body that must not reach mcp-use, or undefined when it may.
+ * The answer to a body that must not reach mcp-use, or undefined when it may; [] means "answer
+ * nothing".
  *
  * A single oversized tool call gets a tool error, like the MCP SDK gives for invalid arguments.
- * A batch holding one gets an error for each of its requests.
+ * A batch holding one gets an error for each of its requests. subscriptions/listen is refused.
  */
 export function refusal(body: unknown): unknown {
+  // A 2026-07-28 listen stream would stay open for good (each request has its own mcp-use
+  // handler, so its subscription cap never applies) and this server sends no notifications.
+  if (isObject(body) && body.method === "subscriptions/listen") {
+    return isRequestId(body.id) ? { jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "Method not found" } } : [];
+  }
   if (!Array.isArray(body)) {
     const text = oversizedToolCall(body);
     if (text === undefined) return undefined;
@@ -258,6 +264,12 @@ export function serveStdio(server: MCPServer, options: StdioOptions): StdioConne
     const refused = refusal(body);
     if (refused !== undefined) {
       if (!Array.isArray(refused) || refused.length > 0) write(refused);
+      return;
+    }
+    // A modern request's method goes into a header; one that cannot be a header value is no method.
+    if (envelopeVersion(body) !== undefined && !/^[\x21-\x7e]+$/.test(String((body as JsonObject).method))) {
+      const id = (body as JsonObject).id;
+      if (isRequestId(id)) write({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
       return;
     }
     const requestId = isObject(body) && isRequestId(body.id) ? JSON.stringify(body.id) : undefined;

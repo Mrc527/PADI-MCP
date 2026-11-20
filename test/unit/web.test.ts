@@ -337,7 +337,7 @@ describe("OAuth and MCP", () => {
     const batch = await post(Array.from({ length: 21 }, (_, i) => ({ jsonrpc: "2.0", id: i, method: "ping" })));
     expect(batch.status).toBe(400);
 
-    // A body express.json does not parse never reaches mcp-use, which would read it unbounded.
+    // A body express.json does not parse is refused (mcp-transport.test.ts checks mcp-use never reads it).
     const plain = await fetch(`${base}/mcp`, { method: "POST", headers: { ...auth, "content-type": "text/plain" }, body: "x".repeat(1024 * 1024) });
     expect(plain.status).toBe(415);
 
