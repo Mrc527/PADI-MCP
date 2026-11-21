@@ -5,7 +5,7 @@
  */
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Client } from "@modelcontextprotocol/client";
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { signIn } from "../../src/padi/auth.js";
@@ -20,6 +20,7 @@ import { createWebApp, type WebApp } from "../../src/web/server.js";
 import { DEFAULT_SETTINGS, type PadiAccountSettings } from "../../src/web/store.js";
 import { MOCK_ACCOUNT, startMockPadi, type MockPadi } from "../helpers/mock-padi.js";
 import { Browser, connectMcp, setBase, TestOAuthClient } from "../helpers/web-client.js";
+import { messagesOf } from "../helpers/mcp-client.js";
 
 /** A second diver of the mock PADI (invented). */
 const OTHER_DIVER = { email: "sky.example@example.com", password: "invented-password-2", affiliateId: "20000002", givenName: "Sky", familyName: "Example" };
@@ -319,6 +320,34 @@ describe("OAuth and MCP", () => {
     expect(JSON.stringify(info.content)).toContain("not connected yet");
   });
 
+  it("serves /mcp through the SDK handler, and refuses oversized tool input, large batches and GET", async () => {
+    const auth = { authorization: `Bearer ${oauth.savedTokens!.access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream" };
+    const post = (body: unknown) => fetch(`${base}/mcp`, { method: "POST", headers: auth, body: JSON.stringify(body) });
+    const list = await post({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(list.status).toBe(200);
+    expect(list.headers.get("content-type")).toBe("text/event-stream");
+    expect(list.headers.get("access-control-allow-origin")).toBe("*");
+    const [answer] = (await messagesOf(list)) as Array<{ id: number; result: { tools: Array<{ name: string }> } }>;
+    expect(answer!.id).toBe(1);
+    expect(answer!.result.tools.map((t) => t.name)).toContain("padi_account_info");
+
+    const oversized = await post({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "logbook_list_dives", arguments: { query: Array(10_001).fill("x") } } });
+    expect(await messagesOf(oversized)).toEqual([expect.objectContaining({ id: 2, result: expect.objectContaining({ isError: true, content: [expect.objectContaining({ text: expect.stringMatching(/maximum of 10000 elements/) })] }) })]);
+
+    const batch = await post(Array.from({ length: 21 }, (_, i) => ({ jsonrpc: "2.0", id: i, method: "ping" })));
+    expect(batch.status).toBe(400);
+
+    // A body express.json does not parse is refused (mcp-transport.test.ts checks the SDK never reads it).
+    const plain = await fetch(`${base}/mcp`, { method: "POST", headers: { ...auth, "content-type": "text/plain" }, body: "x".repeat(1024 * 1024) });
+    expect(plain.status).toBe(415);
+
+    for (const method of ["GET", "DELETE"]) {
+      const res = await fetch(`${base}/mcp`, { method, headers: { authorization: auth.authorization, accept: "text/event-stream" } });
+      expect(res.status, method).toBe(405);
+      expect(res.headers.get("allow")).toBe("POST");
+    }
+  });
+
   it("uses the user's own PADI connection once it is saved", async () => {
     const { csrf } = await userBrowser.page("/account");
     const saved = await userBrowser.post("/account/padi", { _csrf: csrf, email: OTHER_DIVER.email, password: OTHER_DIVER.password });
@@ -338,6 +367,50 @@ describe("OAuth and MCP", () => {
     expect(list.isError).toBeFalsy();
     expect(JSON.parse((list.content as { text: string }[])[0]!.text).total).toBe(mock.accounts[1]!.store.sorted().length);
     expect(mock.violations).toEqual([]);
+  });
+
+  it("serves 2026-07-28 requests with each token's own account, and refuses a bad token", async () => {
+    const adminBrowser = new Browser();
+    expect((await adminBrowser.login("admin@example.com", PASSWORD)).status).toBe(303);
+    const adminOauth = new TestOAuthClient(adminBrowser);
+    await (await connectMcp(adminOauth)).close();
+    const meta = { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "t", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} };
+    const call = (token: string) =>
+      fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2026-07-28",
+          "mcp-method": "tools/call",
+          "mcp-name": "padi_account_info",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "padi_account_info", arguments: {}, _meta: meta } }),
+      });
+    const resultOf = async (res: Response) => {
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toMatch(/^application\/json/);
+      const body = (await res.json()) as { result: { isError?: boolean; content: Array<{ text: string }> } };
+      return body.result;
+    };
+    // The user has OTHER_DIVER's PADI connection; the administrator has none.
+    const mine = await resultOf(await call(oauth.savedTokens!.access_token));
+    expect(mine.isError).toBeFalsy();
+    expect(mine.content[0]!.text).toContain(OTHER_DIVER.affiliateId);
+    const admins = await resultOf(await call(adminOauth.savedTokens!.access_token));
+    expect(admins.isError).toBe(true);
+    expect(admins.content[0]!.text).toContain("admin@example.com");
+    expect(admins.content[0]!.text).not.toContain(OTHER_DIVER.affiliateId);
+
+    const bad = await call("pdm_at_not-a-token");
+    expect(bad.status).toBe(401);
+    expect(bad.headers.get("www-authenticate")).toContain(`resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`);
+
+    // Browsers ask first: the headers 2026-07-28 requests carry must be allowed.
+    const preflight = await fetch(`${base}/mcp`, { method: "OPTIONS", headers: { origin: "https://claude.ai", "access-control-request-method": "POST", "access-control-request-headers": "mcp-method, mcp-name" } });
+    expect(preflight.status).toBe(204);
+    for (const h of ["mcp-protocol-version", "mcp-method", "mcp-name", "authorization"]) expect(preflight.headers.get("access-control-allow-headers")).toContain(h);
   });
 
   it("hides the write tools when the user turns on read-only", async () => {

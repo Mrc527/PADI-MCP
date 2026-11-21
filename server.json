@@ -3,7 +3,7 @@
   "name": "ch.visin.mcp/padi",
   "title": "MCP for PADI",
   "description": "Unofficial. Read and log dives in your PADI online logbook. Needs an account at padi.mcp.visin.ch.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "websiteUrl": "https://padi.mcp.visin.ch",
   "icons": [
     {

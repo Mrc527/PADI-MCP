@@ -9,9 +9,9 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual, createHash } from "node:crypto";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { isLoopback, type HttpSettings } from "./config.js";
+import { createNodeMcpHandler, readBody } from "./mcp-transport.js";
 
 export interface HttpServerOptions {
   settings: HttpSettings;
@@ -19,6 +19,9 @@ export interface HttpServerOptions {
   createMcpServer: () => McpServer;
   log: (message: string) => void;
 }
+
+/** Largest request body, as the MCP SDK allowed. */
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 function tokenMatches(expected: string, provided: string): boolean {
   // Hash both values so the comparison is constant-time regardless of length.
@@ -60,6 +63,7 @@ export function isAllowedHost(hostHeader: string | undefined, settings: HttpSett
 
 export function startHttpServer(options: HttpServerOptions): Promise<Server> {
   const { settings, log } = options;
+  const mcp = createNodeMcpHandler(() => options.createMcpServer(), log);
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -68,7 +72,7 @@ export function startHttpServer(options: HttpServerOptions): Promise<Server> {
     if (origin && settings.allowedOrigins.includes(origin)) {
       corsHeaders["access-control-allow-origin"] = origin;
       corsHeaders["access-control-allow-headers"] =
-        "authorization, content-type, mcp-session-id, mcp-protocol-version, last-event-id";
+        "authorization, content-type, mcp-session-id, mcp-protocol-version, mcp-method, mcp-name, last-event-id";
       corsHeaders["access-control-allow-methods"] = "POST, GET, DELETE, OPTIONS";
       corsHeaders["access-control-expose-headers"] = "mcp-session-id";
       corsHeaders["vary"] = "Origin";
@@ -110,21 +114,28 @@ export function startHttpServer(options: HttpServerOptions): Promise<Server> {
         return;
       }
 
+      const raw = await readBody(req, MAX_BODY_BYTES);
+      if (raw === undefined) {
+        jsonRpcError(res, 413, "Request body too large", corsHeaders);
+        return;
+      }
+      let body: unknown;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        sendJson(res, 400, { jsonrpc: "2.0", error: { code: -32700, message: "Parse error: Invalid JSON" }, id: null }, corsHeaders);
+        return;
+      }
       for (const [k, v] of Object.entries(corsHeaders)) res.setHeader(k, v);
-      const mcp = options.createMcpServer();
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-      res.on("close", () => {
-        void transport.close();
-        void mcp.close();
-      });
-      await mcp.connect(transport);
-      await transport.handleRequest(req, res);
+      await mcp.post(req, res, body);
     } catch (error) {
       log(`HTTP request failed: ${(error as Error).message}`);
       if (!res.headersSent) jsonRpcError(res, 500, "Internal server error");
       else res.end();
     }
   });
+
+  server.on("close", () => void mcp.close());
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);

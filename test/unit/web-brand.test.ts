@@ -11,6 +11,7 @@ import { en } from "../../src/web/i18n/en/index.js";
 import { LOGO_SMALL_SVG, LOGO_SVG } from "../../src/web/brand-assets.js";
 import { createWebApp, type WebApp } from "../../src/web/server.js";
 import { Browser, connectMcp, setBase, TestOAuthClient } from "../helpers/web-client.js";
+import { connectClient } from "../helpers/mcp-client.js";
 
 let web: WebApp;
 let server: Server;
@@ -93,12 +94,13 @@ describe("icons", () => {
     for (const icon of info.icons!) expect((await fetch(icon.src)).status).toBe(200);
   });
 
-  it("puts the icon inline in single-user mode", () => {
+  it("puts the icon inline in single-user mode", async () => {
     const config = loadConfig({ PADI_EMAIL: "diver.test@example.com", PADI_PASSWORD: "not-a-real-password" });
-    const mcp = createMcpServer(config, createServices(config), () => {});
-    const info = (mcp.server as unknown as { _serverInfo: { icons: { src: string; mimeType: string }[] } })._serverInfo;
-    expect(info.icons[0]!.mimeType).toBe("image/png");
-    expect(info.icons[0]!.src).toMatch(/^data:image\/png;base64,iVBOR/);
+    const client = await connectClient(createMcpServer(config, createServices(config), () => {}));
+    const info = client.getServerVersion()!;
+    expect(info.icons![0]!.mimeType).toBe("image/png");
+    expect(info.icons![0]!.src).toMatch(/^data:image\/png;base64,iVBOR/);
+    await client.close();
   });
 });
 
@@ -128,15 +130,16 @@ describe("product name", () => {
     for (const [key, text] of Object.entries(en)) expect(text, key).not.toMatch(/iCloud|Apple Account|app-specific password/);
   });
 
-  it("is the title of the logo files and of the MCP server, whose internal name stays padi-mcp", () => {
+  it("is the title of the logo files and of the MCP server, whose internal name stays padi-mcp", async () => {
     for (const svg of [LOGO_SVG, LOGO_SMALL_SVG, readFileSync(new URL("../../assets/brand/logo.svg", import.meta.url), "utf8")]) {
       expect(svg).toContain(`<title>${NAME}</title>`);
     }
     const config = loadConfig({ PADI_EMAIL: "diver.test@example.com", PADI_PASSWORD: "not-a-real-password" });
-    const mcp = createMcpServer(config, createServices(config), () => {});
-    const info = (mcp.server as unknown as { _serverInfo: { name: string; title: string } })._serverInfo;
+    const client = await connectClient(createMcpServer(config, createServices(config), () => {}));
+    const info = client.getServerVersion()!;
     expect(info.name).toBe("padi-mcp");
     // The title AI apps show starts with the product name (it may say what it is for after it).
-    expect(info.title.startsWith(NAME)).toBe(true);
+    expect(info.title!.startsWith(NAME)).toBe(true);
+    await client.close();
   });
 });

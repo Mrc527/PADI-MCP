@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Icon } from "@modelcontextprotocol/sdk/types.js";
+import { McpServer, type Icon } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { describeConfig, type AppConfig } from "./config.js";
 import { DemoLogbookBackend, type DemoLogbookStore } from "./demo/logbook.js";
@@ -35,6 +34,9 @@ export interface CreateServicesOptions {
   fetch?: typeof fetch;
   log?: (m: string) => void;
 }
+
+/** Largest number of array elements plus object members in one tool call's arguments. */
+export const MAX_TOOL_INPUT_ELEMENTS = 10_000;
 
 /** Timeout of every PADI request. */
 const PADI_TIMEOUT_MS = 20_000;
@@ -306,6 +308,7 @@ async function accountInfo(config: AppConfig, services: Services, check: boolean
   return info;
 }
 
+/** The MCP server of one account. Cheap to build (registration only): HTTP builds one per request. */
 export function createMcpServer(config: AppConfig, services: Services, log: (m: string) => void, hooks: McpServerHooks = {}): McpServer {
   const server = new McpServer(
     {
@@ -319,7 +322,7 @@ export function createMcpServer(config: AppConfig, services: Services, log: (m: 
     {
       instructions: buildInstructions(config) + (hooks.extraInstructions ? `\n${hooks.extraInstructions}` : ""),
       capabilities: { tools: {}, prompts: {} },
-      maxToolInputElements: 10_000,
+      maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
     },
   );
   const ctx: ToolContext = {
@@ -370,7 +373,7 @@ function registerPrompts(server: McpServer, config: AppConfig): void {
       {
         title: "Log a dive",
         description: "Add a dive to the PADI logbook, asking only for what is missing",
-        argsSchema: { details: z.string().optional().describe("What you remember about the dive (site, date, depth, time, conditions, buddies, ...)") },
+        argsSchema: z.object({ details: z.string().optional().describe("What you remember about the dive (site, date, depth, time, conditions, buddies, ...)") }),
       },
       ({ details }) => ({
         messages: [
@@ -394,7 +397,7 @@ function registerPrompts(server: McpServer, config: AppConfig): void {
     {
       title: "Year in review",
       description: "A summary of a year of diving from the PADI logbook",
-      argsSchema: { year: z.string().optional().describe('The year, for example 2026, "last year" or "this year" (default: this year)') },
+      argsSchema: z.object({ year: z.string().optional().describe('The year, for example 2026, "last year" or "this year" (default: this year)') }),
     },
     ({ year }) => {
       const today = todayInZone(config.timeZone);

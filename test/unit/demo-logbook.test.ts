@@ -3,8 +3,6 @@
  * logbook API, so the service can be tested on it), and the whole path from the MCP tools through
  * the LogbookService to the demo store.
  */
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.js";
 import { DEMO_INSTRUCTOR_NUMBER, DEMO_NOTICE, DemoRegistry } from "../../src/demo/index.js";
@@ -15,6 +13,7 @@ import type { Dive, WireLog, WireLogInsert, WireLogUpdate } from "../../src/logb
 import { createMcpServer, createServices } from "../../src/server.js";
 import { addDays } from "../../src/util/dates.js";
 import { NotFoundError } from "../../src/util/errors.js";
+import { connectClient } from "../helpers/mcp-client.js";
 
 const NOW = new Date("2026-11-09T12:00:00Z");
 const TZ = "Europe/Zurich";
@@ -441,9 +440,7 @@ describe("the demo logbook through the LogbookService", () => {
     const config = loadConfig({ PADI_EMAIL: "alex.demo@example.com", PADI_REFRESH_TOKEN: "demo-placeholder-token", PADI_TIMEZONE: TZ });
     const services = createServices(config, { demo: store });
     const server = createMcpServer(config, services, () => {}, { extraInstructions: DEMO_NOTICE, accountInfo: { demo_account: DEMO_NOTICE } });
-    const client = new Client({ name: "demo-test", version: "1.0.0" });
-    const [ct, st] = InMemoryTransport.createLinkedPair();
-    await Promise.all([client.connect(ct), server.connect(st)]);
+    const client = await connectClient(server, "demo-test");
     const res = await client.callTool({ name: "logbook_list_dives", arguments: { limit: 5 } });
     expect(res.isError).toBeFalsy();
     const page = JSON.parse((res.content as Array<{ text: string }>)[0]!.text) as ListDivesResult;

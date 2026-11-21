@@ -4,13 +4,11 @@
  */
 
 import express, { type Request, type Response, type Router } from "express";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { Icon } from "@modelcontextprotocol/sdk/types.js";
+import { requireBearerAuth } from "@modelcontextprotocol/express";
+import type { AuthInfo, Icon, McpServer } from "@modelcontextprotocol/server";
 import { DEMO_NOTICE } from "../demo/index.js";
 import { DemoLogbookStore } from "../demo/logbook.js";
+import { createNodeMcpHandler } from "../mcp-transport.js";
 import { PadiAuthError, type PadiAuthErrorCode } from "../padi/auth.js";
 import { createMcpServer, createServices, type Services } from "../server.js";
 import { redactForLog, UserFacingError } from "../util/errors.js";
@@ -103,13 +101,41 @@ function cors(req: Request, res: Response, next: () => void): void {
   // Bearer tokens (no cookies) authenticate this endpoint, so any origin may call it.
   res.setHeader("access-control-allow-origin", "*");
   res.setHeader("access-control-allow-methods", "POST, GET, DELETE, OPTIONS");
-  res.setHeader("access-control-allow-headers", "authorization, content-type, mcp-protocol-version, mcp-session-id, last-event-id");
+  // 2026-07-28 requests mirror their method and name into Mcp-Method and Mcp-Name.
+  res.setHeader("access-control-allow-headers", "authorization, content-type, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id, last-event-id");
   res.setHeader("access-control-expose-headers", "www-authenticate, mcp-session-id");
   if (req.method === "OPTIONS") {
     res.status(204).end();
     return;
   }
   next();
+}
+
+/** The MCP server for the account an access token belongs to, with that account's settings. */
+function serverFor(ctx: WebContext, auth: AuthInfo | undefined): McpServer {
+  const user = auth ? ctx.store.getUser(String(auth.extra?.userId ?? "")) : undefined;
+  // The route answered 401 for these already; the account was disabled in between.
+  if (!auth || !user || user.disabled) throw new Error("Account not active");
+  try {
+    const userCtx = user.padiNeedsReconnect && !user.demo ? undefined : ctx.pool.get(user);
+    if (!userCtx) return setupServer(ctx, user, user.padiNeedsReconnect && !user.demo ? "reconnect" : undefined);
+    return createMcpServer(userCtx.config, user.demo ? userCtx.services : withAccountLink(userCtx.services, expiredMessage(ctx)), ctx.log, {
+      ...branding(ctx),
+      onToolCall: (tool, ok, ms) => {
+        try {
+          ctx.live.publish(user.id, ctx.store.logActivity(user.id, tool, ok, ms, auth.clientId));
+        } catch {
+          // Activity logging must never break a tool call.
+        }
+      },
+      extraInstructions: user.demo
+        ? `${DEMO_NOTICE}\nAccount settings (read-only switch) are managed at ${issuerOf(ctx.publicUrl)}/account.`
+        : `Account settings (PADI connection, units, read-only) are managed at ${issuerOf(ctx.publicUrl)}/account.`,
+      ...(user.demo ? { accountInfo: { demo_account: DEMO_NOTICE } } : {}),
+    });
+  } catch (error) {
+    return setupServer(ctx, user, (error as Error).message);
+  }
 }
 
 /** JSON-RPC messages accepted in one batch. */
@@ -134,6 +160,8 @@ export function mcpRoutes(ctx: WebContext): Router {
   });
 
   r.use("/mcp", cors);
+  // The SDK builds a server per request, for the account of the token that requireBearerAuth checked.
+  const mcp = createNodeMcpHandler(({ authInfo }) => serverFor(ctx, authInfo), ctx.log);
 
   // Same size limit as the MCP SDK. Parsing here lets the batch size be checked.
   const json = express.json({ limit: "4mb" });
@@ -152,36 +180,8 @@ export function mcpRoutes(ctx: WebContext): Router {
       res.status(401).json({ jsonrpc: "2.0", error: { code: -32001, message: "Account not active" }, id: null });
       return;
     }
-    let server: McpServer;
     try {
-      const userCtx = user.padiNeedsReconnect && !user.demo ? undefined : ctx.pool.get(user);
-      server = userCtx
-        ? createMcpServer(userCtx.config, user.demo ? userCtx.services : withAccountLink(userCtx.services, expiredMessage(ctx)), ctx.log, {
-            ...branding(ctx),
-            onToolCall: (tool, ok, ms) => {
-              try {
-                ctx.live.publish(user.id, ctx.store.logActivity(user.id, tool, ok, ms, auth.clientId));
-              } catch {
-                // Activity logging must never break a tool call.
-              }
-            },
-            extraInstructions: user.demo
-              ? `${DEMO_NOTICE}\nAccount settings (read-only switch) are managed at ${issuerOf(ctx.publicUrl)}/account.`
-              : `Account settings (PADI connection, units, read-only) are managed at ${issuerOf(ctx.publicUrl)}/account.`,
-            ...(user.demo ? { accountInfo: { demo_account: DEMO_NOTICE } } : {}),
-          })
-        : setupServer(ctx, user, user.padiNeedsReconnect && !user.demo ? "reconnect" : undefined);
-    } catch (error) {
-      server = setupServer(ctx, user, (error as Error).message);
-    }
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    res.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
-    try {
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+      await mcp.post(req, res, req.body);
     } catch (error) {
       ctx.log(`MCP request failed: ${redactForLog((error as Error).message, [])}`);
       if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal error" }, id: null });

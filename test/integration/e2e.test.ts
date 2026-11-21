@@ -14,14 +14,14 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.js";
 import { closeServices, createMcpServer, createServices, type Services } from "../../src/server.js";
 import { MOCK_ACCOUNT, startMockPadi, type MockPadi } from "../helpers/mock-padi.js";
+import { connectClient } from "../helpers/mcp-client.js";
 
 const enabled = process.env.PADI_MCP_IT === "1";
 
@@ -44,9 +44,7 @@ async function inProcess(extra: Record<string, string> = {}): Promise<{ client: 
   const services = createServices(config);
   opened.push(services);
   const server = createMcpServer(config, services, () => {});
-  const client = new Client({ name: "it", version: "1.0.0" });
-  const [ct, st] = InMemoryTransport.createLinkedPair();
-  await Promise.all([client.connect(ct), server.connect(st)]);
+  const client = await connectClient(server, "it");
   return { client, services };
 }
 

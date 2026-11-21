@@ -3,8 +3,7 @@
  * JSON output.
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, McpServer, ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { describeError, redact, redactForLog, UserFacingError } from "./util/errors.js";
@@ -93,7 +92,7 @@ export function registerTool<Shape extends ZodShape>(
       inputSchema: z.strictObject(spec.inputSchema),
       annotations,
     },
-    // The SDK infers argument types from the shape; we re-type the handler to keep call sites simple.
+    // The SDK infers argument types from the schema; the handler is re-typed to keep call sites simple.
     (async (args: Output<Shape>) => {
       const started = Date.now();
       try {

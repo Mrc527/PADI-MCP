@@ -53,6 +53,7 @@ src/
   index.ts            CLI (stdio / --web / --http / --check / --help)       [template, adapted]
   config.ts           AppConfig from env                                    [rewritten]
   server.ts           createServices / createMcpServer / prompts            [rewritten]
+  mcp-transport.ts    the MCP SDK's HTTP handler on Node, with the checks in front of it
   tooling.ts          registerTool (read-only gating, annotations, redaction) [template, as is]
   http.ts             single-user Streamable HTTP                            [template]
   version.ts                                                                 [template]

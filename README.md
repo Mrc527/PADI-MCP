@@ -611,7 +611,7 @@ npm run typecheck
 npm test               # unit tests (integration tests are skipped)
 ```
 
-The unit tests use a mocked `fetch` for the PADI client (sign-in success, failure and challenges, refresh, single-flight refresh, retry on 401 and `invalid-jwt`, the `auto` API mode switch, query text and headers in proxy and direct mode), and cover the logbook service (array literals, dates, units, merge on update, missing child rows, locked dives, delete confirmation), the MCP tool surface (tool list, annotations, read-only mode, strict arguments, redaction), the demo logbook, and the web service (sign-up, sign-in, CSRF, account settings, the full OAuth flow with the SDK's OAuth client as Claude would run it, token refresh and reuse detection, client metadata documents, admin controls, security headers, translations).
+The unit tests use a mocked `fetch` for the PADI client (sign-in success, failure and challenges, refresh, single-flight refresh, retry on 401 and `invalid-jwt`, the `auto` API mode switch, query text and headers in proxy and direct mode), and cover the logbook service (array literals, dates, units, merge on update, missing child rows, locked dives, delete confirmation), the MCP tool surface (tool list, annotations, read-only mode, strict arguments, redaction, and a snapshot of every tool, schema and prompt in `test/fixtures/mcp-surface.json`, on 2025-era connections and on the 2026-07-28 protocol), the HTTP checks in front of the MCP SDK handler, the stdio process, the demo logbook, and the web service (sign-up, sign-in, CSRF, account settings, the full OAuth flow with the SDK's OAuth client as Claude would run it, token refresh and reuse detection, client metadata documents, admin controls, security headers, translations).
 
 End-to-end tests start the real server (in process, and the built `dist/index.js` over stdio, `--http` and `--web`) against an in-process mock of the PADI API (`test/helpers/mock-padi.ts`: Cognito, the PADI auth API, the logbook GraphQL API and the REST endpoints). They never talk to PADI and need no PADI account:
 
@@ -628,7 +628,8 @@ Project layout:
 src/
   index.ts            CLI entry point (stdio / --web / --http / --check)
   config.ts           environment configuration
-  server.ts           MCP server, instructions, prompts, service wiring
+  server.ts           MCP server (MCP SDK v2), instructions, prompts, service wiring
+  mcp-transport.ts    the MCP SDK's HTTP handler on Node, with the checks in front of it
   http.ts             Streamable HTTP transport with auth and Host/Origin checks
   tooling.ts          tool registration helpers (errors, read-only gating, annotations, redaction)
   padi/               PADI client: endpoints, sign-in, token session, HTTP, GraphQL, API
