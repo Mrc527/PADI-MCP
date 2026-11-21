@@ -3,7 +3,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { OAuthClientInformationFull } from "@modelcontextprotocol/server";
 import type { UnitChoice } from "../logbook/types.js";
 import type { LoginMethod, StoredPadiTokens } from "../padi/auth.js";
 import { randomToken, SecretBox, sha256 } from "./crypto.js";

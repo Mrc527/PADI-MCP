@@ -5,7 +5,7 @@
  */
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Client } from "@modelcontextprotocol/client";
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { signIn } from "../../src/padi/auth.js";
@@ -16,11 +16,11 @@ import { SecretBox } from "../../src/web/crypto.js";
 import { escapeHtml } from "../../src/web/html.js";
 import { t, withLocale } from "../../src/web/i18n/index.js";
 import { signInError } from "../../src/web/routes-account.js";
-import { messagesOf } from "../../src/mcp-transport.js";
 import { createWebApp, type WebApp } from "../../src/web/server.js";
 import { DEFAULT_SETTINGS, type PadiAccountSettings } from "../../src/web/store.js";
 import { MOCK_ACCOUNT, startMockPadi, type MockPadi } from "../helpers/mock-padi.js";
 import { Browser, connectMcp, setBase, TestOAuthClient } from "../helpers/web-client.js";
+import { messagesOf } from "../helpers/mcp-client.js";
 
 /** A second diver of the mock PADI (invented). */
 const OTHER_DIVER = { email: "sky.example@example.com", password: "invented-password-2", affiliateId: "20000002", givenName: "Sky", familyName: "Example" };
@@ -320,7 +320,7 @@ describe("OAuth and MCP", () => {
     expect(JSON.stringify(info.content)).toContain("not connected yet");
   });
 
-  it("serves /mcp through mcp-use, and refuses oversized tool input, large batches and GET", async () => {
+  it("serves /mcp through the SDK handler, and refuses oversized tool input, large batches and GET", async () => {
     const auth = { authorization: `Bearer ${oauth.savedTokens!.access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream" };
     const post = (body: unknown) => fetch(`${base}/mcp`, { method: "POST", headers: auth, body: JSON.stringify(body) });
     const list = await post({ jsonrpc: "2.0", id: 1, method: "tools/list" });
@@ -332,12 +332,12 @@ describe("OAuth and MCP", () => {
     expect(answer!.result.tools.map((t) => t.name)).toContain("padi_account_info");
 
     const oversized = await post({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "logbook_list_dives", arguments: { query: Array(10_001).fill("x") } } });
-    expect(await oversized.json()).toMatchObject({ id: 2, result: { isError: true, content: [{ text: expect.stringMatching(/maximum of 10000 elements/) }] } });
+    expect(await messagesOf(oversized)).toEqual([expect.objectContaining({ id: 2, result: expect.objectContaining({ isError: true, content: [expect.objectContaining({ text: expect.stringMatching(/maximum of 10000 elements/) })] }) })]);
 
     const batch = await post(Array.from({ length: 21 }, (_, i) => ({ jsonrpc: "2.0", id: i, method: "ping" })));
     expect(batch.status).toBe(400);
 
-    // A body express.json does not parse is refused (mcp-transport.test.ts checks mcp-use never reads it).
+    // A body express.json does not parse is refused (mcp-transport.test.ts checks the SDK never reads it).
     const plain = await fetch(`${base}/mcp`, { method: "POST", headers: { ...auth, "content-type": "text/plain" }, body: "x".repeat(1024 * 1024) });
     expect(plain.status).toBe(415);
 

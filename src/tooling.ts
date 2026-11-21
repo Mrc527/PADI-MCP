@@ -3,7 +3,7 @@
  * JSON output.
  */
 
-import type { CallToolResult, MCPServer, ToolAnnotations } from "mcp-use";
+import type { CallToolResult, McpServer, ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { describeError, redact, redactForLog, UserFacingError } from "./util/errors.js";
@@ -11,7 +11,7 @@ import { describeError, redact, redactForLog, UserFacingError } from "./util/err
 export type ZodShape = Record<string, z.ZodType>;
 
 export interface ToolContext {
-  server: MCPServer;
+  server: McpServer;
   config: AppConfig;
   log: (message: string) => void;
   /** Called after every tool call (used for the per-user activity log in web mode). */
@@ -82,9 +82,9 @@ export function registerTool<Shape extends ZodShape>(
     idempotentHint: spec.idempotent ?? spec.kind === "read",
     openWorldHint: spec.openWorld ?? false,
   };
-  ctx.server.tool(
+  ctx.server.registerTool(
+    spec.name,
     {
-      name: spec.name,
       title: spec.title,
       description: spec.description,
       // Strict: a mistyped argument name (e.g. "occurence") is an error instead of being ignored,
@@ -92,7 +92,7 @@ export function registerTool<Shape extends ZodShape>(
       inputSchema: z.strictObject(spec.inputSchema),
       annotations,
     },
-    // mcp-use infers argument types from the schema; the handler is re-typed to keep call sites simple.
+    // The SDK infers argument types from the schema; the handler is re-typed to keep call sites simple.
     (async (args: Output<Shape>) => {
       const started = Date.now();
       try {
