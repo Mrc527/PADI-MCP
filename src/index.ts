@@ -8,7 +8,7 @@
  *   padi-mcp --check      # sign in to PADI, count the dives and exit
  */
 
-import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { loadConfig, describeConfig, type CliOverrides } from "./config.js";
 import { startHttpServer } from "./http.js";
 import { closeServices, createMcpServer, createServices } from "./server.js";
@@ -176,13 +176,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  // One server serves the connection; when the client goes away, shut down.
-  serveStdio(() => {
-    const server = createMcpServer(config, services, safeLog);
-    server.server.onclose = () => void shutdown(0);
-    return server;
-  });
-  process.stdin.on("end", () => void shutdown(0));
+  // Shut down when the connection ends (stdin closed, stdout broken, or the pinned server closed
+  // it), not on a server's onclose: serveStdio also closes the server/discover probe it discards
+  // when the client then falls back to initialize.
+  class ExitOnCloseTransport extends StdioServerTransport {
+    override async close(): Promise<void> {
+      await super.close();
+      void shutdown(0);
+    }
+  }
+  serveStdio(() => createMcpServer(config, services, safeLog), { transport: new ExitOnCloseTransport() });
   safeLog(`ready (stdio). PADI logbook, units ${config.units}, API mode ${config.padi.apiMode}${config.readOnly ? " [read-only]" : ""}`);
 }
 
